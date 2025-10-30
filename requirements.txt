@@ -1,0 +1,5 @@
+Flask
+requests
+APScheduler
+gunicorn
+psycopg2-binary  # PostgreSQL接続用
