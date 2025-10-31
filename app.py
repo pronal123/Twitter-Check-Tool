@@ -206,8 +206,11 @@ app = Flask(__name__)
 try:
     setup_database()
     scheduler = BackgroundScheduler()
-    # 15分ごと (900秒) に scheduled_check 関数を実行
+    
+    # 初回起動時に即座に実行し、その後15分ごとに実行する設定
+    # next_run_time を指定しないため、scheduler.start() 時に即座に実行されます。
     scheduler.add_job(scheduled_check, 'interval', seconds=900) 
+    
     scheduler.start()
 except Exception as e:
     print(f"BOT初期化失敗: {e}")
