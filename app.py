@@ -3,11 +3,10 @@ import requests
 import time
 import psycopg2
 from flask import Flask, jsonify
-from apscheduler.schedulers.background import BackgroundScheduler
 from urllib.parse import urlparse
 from requests.exceptions import HTTPError, RequestException 
-from datetime import datetime, timedelta
-import threading 
+from datetime import datetime
+import threading # /run_checkエンドポイントの実行を非同期にするために使用
 
 # X API Base URL
 X_API_URL = "https://api.twitter.com/2"
@@ -18,8 +17,9 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 BEARER_TOKEN = os.environ.get("BEARER_TOKEN")
 
-if not all([TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, DATABASE_URL]):
-    print("エラー: 必要な環境変数が不足しています。デプロイ設定を確認してください。")
+if not all([TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, DATABASE_URL, BEARER_TOKEN]):
+    # 環境変数が不足している場合、BOTは機能しませんが、Webサービス自体は起動します
+    print("エラー: 必要な環境変数が不足しています。BOTは機能しません。")
 
 # --- データベース接続関数 ---
 def get_db_connection():
@@ -63,7 +63,8 @@ def is_tweet_checked(tweet_id):
         return cursor.fetchone() is not None
     except Exception as e:
         print(f"DB読み取りエラー (is_tweet_checked): {e}")
-        return True
+        # DB接続エラー時は、二重通知を防ぐため「チェック済み」とみなす
+        return True 
     finally:
         if conn:
             conn.close()
@@ -111,7 +112,6 @@ def check_x_account_status(session, username):
     try:
         response = session.get(url, headers=headers, timeout=10)
         
-        # 404 Not Found はアカウント削除の可能性が高い
         if response.status_code == 404:
             return f"アカウント削除の可能性❌: (@{username})"
 
@@ -119,28 +119,24 @@ def check_x_account_status(session, username):
         
         data = response.json()
         
-        # APIがエラーを返した場合（凍結などの場合はエラーが返る）
         if 'errors' in data:
             for error in data['errors']:
-                # 凍結アカウントの典型的なエラーをチェック
                 if 'suspended' in error.get('title', '').lower() or 'not found' in error.get('title', '').lower():
                      return f"アカウント凍結/削除の可能性❌: (@{username})"
                 if error.get('title') == 'Forbidden':
-                     # API制限超過のエラーコードが返る場合
                      return "X API権限エラー (制限超過またはアクセス拒否) 🚫"
                 
             return f"X API処理エラー⚠️: (@{username})"
         
-        # 正常にユーザーデータが取得できた場合
         if 'data' in data and 'id' in data['data']:
-            return None # 正常なアカウント
+            return None
             
         return f"X API不明な応答⚠️: (@{username})"
 
     except HTTPError as e:
         if e.response.status_code == 401:
              return "X API認証エラー (Bearer Tokenが無効/期限切れ) 🔑"
-        if e.response.status_code == 429: # Rate Limit Exceeded
+        if e.response.status_code == 429:
              return "X API制限超過 (リクエストが多すぎます) 🚫"
         return f"X API HTTPエラー ({e.response.status_code}) 🚨"
     except RequestException as e:
@@ -149,26 +145,23 @@ def check_x_account_status(session, username):
         return f"予期せぬエラー: {e.__class__.__name__}"
 
 
-# --- メインの定期実行ロジック (X API版) ---
-def scheduled_check():
+# --- 検知ロジック関数 ---
+def run_detection_check():
     """X APIを使用して当選ツイートを検索し、アカウントの状態をチェックする (無料枠対応)"""
     
     if not BEARER_TOKEN:
         print("X API Bearer Tokenが設定されていません。スキップします。")
-        send_telegram_message("🚨BOTエラー: `BEARER_TOKEN`が設定されていないため、X APIによる検知をスキップしました。")
-        return
+        return "ERROR: BEARER_TOKEN not set."
 
-    # 実行開始ログを強力に表示
+    # 実行開始ログ
     print(f"--------------------------------------------------")
-    print(f"--- 仮想通貨特化検知実行開始 (X API V2 Free Tier): {time.ctime()} ---")
+    print(f"--- 仮想通貨特化検知実行開始 (外部トリガー): {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ---")
     print(f"--------------------------------------------------")
     
-    # 検索クエリ: 日本語の仮想通貨関連の「当選/配布」ツイートからRTを除外
     query = '("BTC" OR "ETH" OR "NFT" OR "エアドロ" OR "GiveAway" OR "Airdrop" OR "仮想通貨" OR "暗号資産") ("当選" OR "DM" OR "おめでとう" OR "配布") lang:ja -is:retweet'
     
     search_url = f"{X_API_URL}/tweets/search/recent"
     
-    # 無料枠の制限に配慮し、max_results=10（最小限）に設定
     params = {
         'query': query,
         'max_results': 10, 
@@ -191,7 +184,7 @@ def scheduled_check():
         
         if 'data' not in search_data or not search_data['data']:
             print("検索結果のツイートは見つかりませんでした。")
-            return
+            return "SUCCESS: No new relevant tweets found."
 
         for tweet in search_data['data']:
             tweet_id = tweet['id']
@@ -202,7 +195,6 @@ def scheduled_check():
             
             mentioned_usernames = []
             
-            # entities.mentions からメンションされたユーザー名を取得
             if 'entities' in tweet and 'mentions' in tweet['entities']:
                 mentioned_usernames = [m['username'] for m in tweet['entities']['mentions']]
 
@@ -212,21 +204,21 @@ def scheduled_check():
 
             # 2. アカウント状態のチェック (ユーザー数に応じてリクエスト消費)
             
-            # Free Tierの制限のため、各チェックの間に間隔を設ける
             for mentioned_username in mentioned_usernames:
                 
-                # リクエストを消費するため、連続実行を防ぐ
+                # Free Tierの制限のため、各チェックの間に間隔を設ける
                 time.sleep(5) 
                 
                 detection_message = check_x_account_status(session, mentioned_username)
                 
                 if detection_message and "X API認証エラー" in detection_message:
                     send_telegram_message(detection_message)
-                    return
+                    return f"ERROR: Authentication issue detected. {detection_message}"
                 
                 if detection_message and "X API制限超過" in detection_message:
-                    send_telegram_message("🚫X API制限超過: 無料枠のリクエスト制限を超過したため、次のスケジュールまでスキップします。")
-                    return 
+                    # 制限超過時は通知して、処理を中断
+                    send_telegram_message("🚫X API制限超過: 無料枠のリクエスト制限を超過しました。次の外部トリガーまでスキップします。")
+                    return "ERROR: X API Rate Limit exceeded." 
 
                 if detection_message:
                     notification_text = (
@@ -240,68 +232,62 @@ def scheduled_check():
             mark_tweet_as_checked(tweet_id)
         
         print("検知処理が正常に終了しました。")
+        return "SUCCESS: Detection completed."
         
     except HTTPError as e:
         status_code = e.response.status_code
         error_msg = f"🚨X API検索エラー (Status: {status_code}): APIキーや権限を確認してください。"
         send_telegram_message(error_msg)
         print(error_msg)
+        return f"ERROR: HTTP Error {status_code} during search."
         
     except RequestException as e:
         error_msg = f"🚨ネットワーク接続エラーが発生: {e.__class__.__name__}"
         send_telegram_message(error_msg)
         print(error_msg)
+        return "ERROR: Network Request failed."
         
     except Exception as e:
         error_msg = f"🚨予期せぬ実行時エラー: {e.__class__.__name__}: {str(e)}"
         send_telegram_message(error_msg)
         print(error_msg)
+        return f"ERROR: Unexpected runtime exception: {e.__class__.__name__}"
 
 
 # ----------------------------------------------------
-# --- FLASKとSCHEDULERの設定 ---
+# --- FLASKのエンドポイント設定 ---
 # ----------------------------------------------------
 
 app = Flask(__name__)
 
 try:
     setup_database()
-    scheduler = BackgroundScheduler()
-    
-    # 実行間隔を1時間1回に変更
-    start_time = datetime.now() - timedelta(hours=1)
-    
-    job = scheduler.add_job(
-        scheduled_check, 
-        'interval', 
-        hours=1, # 1時間ごと
-        start_date=start_time.strftime('%Y-%m-%d %H:%M:%S')
-    ) 
-    
-    print(f"✅ APScheduler: ジョブ '{job.id}' が1時間ごとの実行にスケジュールされました。")
-    
-    scheduler.start()
-    
-    # 起動直後の即時実行をスレッドで強制
-    def force_run_on_startup():
-        # gunicornのワーカー起動を待つための短い遅延
-        time.sleep(1) 
-        print("💡 起動直後の即時実行をスレッドで強制します...")
-        scheduled_check()
-    
-    # 起動を妨げないよう、新しいスレッドで実行
-    threading.Thread(target=force_run_on_startup).start()
-
 except Exception as e:
     print(f"BOT初期化失敗: {e}")
+
+@app.route('/run_check', methods=['GET'])
+def trigger_check():
+    """外部のCronサービスなどからのアクセスを受けて検知を実行するエンドポイント"""
+    
+    # 実行完了を待つとタイムアウトするため、スレッドで非同期実行
+    # Webサービスの応答自体はすぐに返す
+    thread = threading.Thread(target=run_detection_check)
+    thread.start()
+    
+    return jsonify({
+        "status": "Detection triggered",
+        "message": "Detection job started in background thread. Check logs for results.",
+        "timestamp": datetime.now().isoformat()
+    })
 
 @app.route('/')
 def home():
     return jsonify({
-        "status": "running (X API V2 Free Tier Mode)",
-        "service": "X Crypto Winner Compliance BOT (API)",
-        "check_interval": "1 hour", # レスポンスも更新
-        "notice": "This mode is heavily constrained by X Free API limits (1500 req/month)."
+        "status": "Ready for external trigger",
+        "service": "X Crypto Winner Compliance BOT (External Trigger Mode)",
+        "trigger_endpoint": "/run_check",
+        "instructions": "Set up an external monitoring service (e.g., Render Cron Job or external uptime monitoring) to hit the /run_check endpoint hourly for detection.",
+        "notice": "Internal scheduling disabled due to environment limitations. Requires external trigger."
     })
 
 if __name__ == '__main__':
