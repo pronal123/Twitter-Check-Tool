@@ -15,7 +15,6 @@ X_API_URL = "https://api.twitter.com/2"
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 DATABASE_URL = os.environ.get("DATABASE_URL")
-# X API Bearer Token
 BEARER_TOKEN = os.environ.get("BEARER_TOKEN")
 
 if not all([TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, DATABASE_URL]):
@@ -158,7 +157,10 @@ def scheduled_check():
         send_telegram_message("🚨BOTエラー: `BEARER_TOKEN`が設定されていないため、X APIによる検知をスキップしました。")
         return
 
+    # 実行開始ログを強力に表示
+    print(f"--------------------------------------------------")
     print(f"--- 仮想通貨特化検知実行開始 (X API V2 Free Tier): {time.ctime()} ---")
+    print(f"--------------------------------------------------")
     
     # 検索クエリ: 日本語の仮想通貨関連の「当選/配布」ツイートからRTを除外
     query = '("BTC" OR "ETH" OR "NFT" OR "エアドロ" OR "GiveAway" OR "Airdrop" OR "仮想通貨" OR "暗号資産") ("当選" OR "DM" OR "おめでとう" OR "配布") lang:ja -is:retweet'
@@ -235,7 +237,8 @@ def scheduled_check():
                     send_telegram_message(notification_text)
             
             mark_tweet_as_checked(tweet_id)
-            
+        
+        print("検知処理が正常に終了しました。")
         
     except HTTPError as e:
         status_code = e.response.status_code
@@ -264,15 +267,18 @@ try:
     setup_database()
     scheduler = BackgroundScheduler()
     
-    # 【無料枠対応】実行間隔を1日1回に設定（即時実行トリガー付き）
+    # 実行間隔を1日1回に設定（即時実行トリガー付き）
     start_time = datetime.now() - timedelta(days=1)
     
-    scheduler.add_job(
+    job = scheduler.add_job(
         scheduled_check, 
         'interval', 
         days=1, # 1日ごと
         start_date=start_time.strftime('%Y-%m-%d %H:%M:%S')
     ) 
+    
+    # 【デバッグ強化】ジョブのスケジューリング完了を明示
+    print(f"✅ APScheduler: ジョブ '{job.id}' が1日ごとの実行にスケジュールされました。")
     
     scheduler.start()
 except Exception as e:
