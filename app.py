@@ -7,16 +7,20 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from urllib.parse import urlparse
 from requests.exceptions import HTTPError, RequestException 
 from datetime import datetime, timedelta
-from bs4 import BeautifulSoup 
+
+# X API Base URL
+X_API_URL = "https://api.twitter.com/2"
 
 # --- 環境変数から設定を取得 ---
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 DATABASE_URL = os.environ.get("DATABASE_URL")
+# X API Bearer Token
+BEARER_TOKEN = os.environ.get("BEARER_TOKEN")
 
 if not all([TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, DATABASE_URL]):
     print("エラー: 必要な環境変数が不足しています。デプロイ設定を確認してください。")
-    
+
 # --- データベース接続関数 ---
 def get_db_connection():
     result = urlparse(DATABASE_URL)
@@ -77,44 +81,6 @@ def mark_tweet_as_checked(tweet_id):
         if conn:
             conn.close()
 
-# --- アカウントのステータス確認（スクレイピングによる代替） ---
-def check_twitter_account_by_scrape(session, username):
-    """ユーザーのプロフィールページをチェックし、凍結/削除を判断する（Requests Sessionを使用）"""
-    url = f"https://twitter.com/{username}"
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-    }
-    
-    try:
-        # セッションを使用してリクエスト
-        response = session.get(url, headers=headers, timeout=10)
-        
-        if response.status_code == 404:
-            return f"アカウント削除の可能性❌: (@{username})"
-            
-        # ログイン画面へリダイレクト
-        if 'login' in response.url.lower() or 'captcha' in response.text.lower():
-            return f"スクレイピング制限/認証要求⚠️: (@{username})"
-            
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # 凍結/削除されたアカウントの典型的な表示をチェック
-        if soup.find('span', string=lambda t: t and ('このアカウントは凍結されています' in t or 'アカウントは存在しません' in t)):
-             return f"アカウント凍結/削除の可能性❌: (@{username})"
-
-        # ユーザー名がタイトルに含まれているかチェックすることで、ページ自体は存在すると推測
-        if soup.title and username.lower() in soup.title.string.lower():
-            return None # アカウントは存在する可能性が高い
-        
-        if soup.title and "Error" in soup.title.string:
-            return f"ページ解析エラー⚠️: (@{username})"
-            
-        return None # デフォルトではアカウントは存在すると見なす
-            
-    except RequestException as e:
-        return f"ネットワークエラー: {e.__class__.__name__}"
-
-
 # --- Telegramにメッセージを送信する関数 ---
 def send_telegram_message(message):
     telegram_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -132,114 +98,148 @@ def send_telegram_message(message):
     except RequestException as e:
         print(f"Telegram通知失敗 (ネットワーク/API): {e}")
 
-# --- メインの定期実行ロジック (スクレイピング版) ---
-def scheduled_check():
-    """仮想通貨関連の当選ツイートを検索し、アカウントが存在しない当選者をチェックする (スクレイピング版)"""
-    print(f"--- 仮想通貨特化検知実行開始 (スクレイピング): {time.ctime()} ---")
-    
-    # 検索クエリの定義: URLエンコード済み
-    encoded_query = 'BTC+OR+ETH+OR+NFT+OR+%E3%82%A8%E3%82%A2%E3%83%89%E3%83%AD+OR+GiveAway+OR+Airdrop+OR+%E4%BB%AE%E6%83%B3%E9%80%9A%E8%B2%A8+OR+%E6%9A%97%E5%8F%B7%E8%B3%87%E7%94%A3+%28%22%E5%BD%93%E9%81%B8%22+OR+%22DM%22+OR+%22%E3%81%8A%E3%82%81%E3%81%A7%E3%81%A8%E3%81%86%22+OR+%22%E9%85%8D%E5%B8%83%22%29'
-    search_url = f"https://twitter.com/search?q={encoded_query}&f=live"
+# --- X APIヘルパー関数 ---
+def check_x_account_status(session, username):
+    """X APIを使用してユーザーのステータスを確認し、凍結・削除を判断する"""
+    url = f"{X_API_URL}/users/by/username/{username}"
     
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        'Authorization': f'Bearer {BEARER_TOKEN}',
+        'User-Agent': 'v2CheckFrozenAccountBot'
     }
     
-    # Requests Sessionを作成し、Cookieを保持させる
-    session = requests.Session()
-
     try:
-        response = session.get(search_url, headers=headers, timeout=20)
+        response = session.get(url, headers=headers, timeout=10)
+        
+        # 404 Not Found はアカウント削除の可能性が高い
+        if response.status_code == 404:
+            return f"アカウント削除の可能性❌: (@{username})"
+
+        response.raise_for_status()
+        
+        data = response.json()
+        
+        # APIがエラーを返した場合（凍結などの場合はエラーが返る）
+        if 'errors' in data:
+            for error in data['errors']:
+                # 凍結アカウントの典型的なエラーをチェック
+                if 'suspended' in error.get('title', '').lower() or 'not found' in error.get('title', '').lower():
+                     return f"アカウント凍結/削除の可能性❌: (@{username})"
+                if error.get('title') == 'Forbidden':
+                     # API制限超過のエラーコードが返る場合
+                     return "X API権限エラー (制限超過またはアクセス拒否) 🚫"
+                
+            return f"X API処理エラー⚠️: (@{username})"
+        
+        # 正常にユーザーデータが取得できた場合
+        if 'data' in data and 'id' in data['data']:
+            return None # 正常なアカウント
+            
+        return f"X API不明な応答⚠️: (@{username})"
+
+    except HTTPError as e:
+        if e.response.status_code == 401:
+             return "X API認証エラー (Bearer Tokenが無効/期限切れ) 🔑"
+        if e.response.status_code == 429: # Rate Limit Exceeded
+             return "X API制限超過 (リクエストが多すぎます) 🚫"
+        return f"X API HTTPエラー ({e.response.status_code}) 🚨"
+    except RequestException as e:
+        return f"ネットワークエラー: {e.__class__.__name__}"
+    except Exception as e:
+        return f"予期せぬエラー: {e.__class__.__name__}"
+
+
+# --- メインの定期実行ロジック (X API版) ---
+def scheduled_check():
+    """X APIを使用して当選ツイートを検索し、アカウントの状態をチェックする (無料枠対応)"""
+    
+    if not BEARER_TOKEN:
+        print("X API Bearer Tokenが設定されていません。スキップします。")
+        send_telegram_message("🚨BOTエラー: `BEARER_TOKEN`が設定されていないため、X APIによる検知をスキップしました。")
+        return
+
+    print(f"--- 仮想通貨特化検知実行開始 (X API V2 Free Tier): {time.ctime()} ---")
+    
+    # 検索クエリ: 日本語の仮想通貨関連の「当選/配布」ツイートからRTを除外
+    query = '("BTC" OR "ETH" OR "NFT" OR "エアドロ" OR "GiveAway" OR "Airdrop" OR "仮想通貨" OR "暗号資産") ("当選" OR "DM" OR "おめでとう" OR "配布") lang:ja -is:retweet'
+    
+    search_url = f"{X_API_URL}/tweets/search/recent"
+    
+    # 無料枠の制限に配慮し、max_results=10（最小限）に設定
+    params = {
+        'query': query,
+        'max_results': 10, 
+        'expansions': 'entities.mentions.username',
+        'tweet.fields': 'created_at,entities'
+    }
+
+    headers = {
+        'Authorization': f'Bearer {BEARER_TOKEN}',
+        'User-Agent': 'v2CheckFrozenAccountBot'
+    }
+    
+    session = requests.Session()
+    
+    try:
+        # 1. ツイート検索 (1リクエスト消費)
+        response = session.get(search_url, headers=headers, params=params, timeout=20)
         response.raise_for_status() 
-
-        soup = BeautifulSoup(response.text, 'html.parser')
+        search_data = response.json()
         
-        # ページがログインを要求しているかチェック
-        if soup.find('input', {'name': 'session[username_or_email]'}):
-             print("スクレイピング失敗: Twitterがログインを要求しています。")
-             send_telegram_message("🚨スクレイピングエラー: TwitterがログインまたはCAPTCHAを要求しています。BOTを停止/チェックしてください。")
-             return
+        if 'data' not in search_data or not search_data['data']:
+            print("検索結果のツイートは見つかりませんでした。")
+            return
 
-        # ツイートの要素を特定 (セレクタの推測と緩和)
-        tweets = soup.find_all('article', {'data-testid': 'tweet'})
-        
-        if not tweets:
-             # data-testid="tweet" が見つからない場合、親要素を広く探す（最後の頼みの綱）
-             print("data-testid='tweet' 要素が見つかりませんでした。別の構造を試します。")
-             
-             # このセレクタは非常に不安定
-             tweets = soup.find_all('div', {'data-testid': 'cellInnerDiv'})
-             
-             if not tweets:
-                 print("検索結果からツイート要素を抽出できませんでした。セレクタを確認してください。")
-                 return
-
-        for tweet_element in tweets[:20]: # 取得したうちの最初の20件だけをチェック
+        for tweet in search_data['data']:
+            tweet_id = tweet['id']
+            tweet_url = f"https://twitter.com/i/web/status/{tweet_id}"
             
-            try:
-                # ユーザー名とツイートIDの抽出ロジック（不安定）
-                tweet_link = tweet_element.find('a', href=lambda href: href and '/status/' in href)
-                if not tweet_link: continue
-
-                href = tweet_link.get('href')
-                parts = href.split('/')
-                
-                if len(parts) < 4: continue
-                
-                tweet_author_username = parts[1]
-                tweet_id = parts[3] 
-                
-                tweet_url = f"https://twitter.com/{tweet_author_username}/status/{tweet_id}"
-                
-                # メンションされているユーザー名のリストを生成
-                mentioned_usernames = []
-                # ツイート本文内の a タグで href が /@から始まるものをメンションとみなす
-                for link in tweet_element.find_all('a'):
-                    link_href = link.get('href')
-                    if link_href and link_href.startswith('/@'):
-                        # リンクのテキストがユーザー名と一致するか確認
-                        link_text = link.get_text().strip()
-                        if link_text and link_text.startswith('@'):
-                            mentioned_usernames.append(link_text.lstrip('@'))
-                        # それ以外の場合はhrefから取得（より確実だが、構造に依存）
-                        elif link_href.count('/') == 1:
-                            mentioned_usernames.append(link_href.lstrip('/'))
-
-                # ユニークなユーザー名だけを保持
-                mentioned_usernames = list(set(mentioned_usernames))
-
-                if not mentioned_usernames:
-                    continue
-
-                if is_tweet_checked(tweet_id):
-                    continue
-
-                # メンションされたユーザーをチェック
-                for mentioned_username in mentioned_usernames:
-                    
-                    # メンションされたユーザーのアカウント状態をチェック（Requests Sessionを使用）
-                    detection_message = check_twitter_account_by_scrape(session, mentioned_username)
-                    
-                    if detection_message:
-                        notification_text = (
-                            f"【仮想通貨当選者 アカウント無し検知 (スクレイピング)】\n"
-                            f"異常内容: {detection_message}\n"
-                            f"該当ツイートの主催者ユーザー: @{tweet_author_username}\n"
-                            f"当選者候補: @{mentioned_username}\n"
-                            f"該当ツイート: [ツイートはこちら]({tweet_url})"
-                        )
-                        send_telegram_message(notification_text)
-                    
-                    time.sleep(2) # レート制限回避のため待機
+            if is_tweet_checked(tweet_id):
+                continue
             
+            mentioned_usernames = []
+            
+            # entities.mentions からメンションされたユーザー名を取得
+            if 'entities' in tweet and 'mentions' in tweet['entities']:
+                mentioned_usernames = [m['username'] for m in tweet['entities']['mentions']]
+
+            if not mentioned_usernames:
                 mark_tweet_as_checked(tweet_id)
+                continue
+
+            # 2. アカウント状態のチェック (ユーザー数に応じてリクエスト消費)
+            
+            # Free Tierの制限のため、各チェックの間に間隔を設ける
+            for mentioned_username in mentioned_usernames:
                 
-            except Exception as e:
-                print(f"個別のツイート処理中にエラー: {e}")
+                # リクエストを消費するため、連続実行を防ぐ
+                time.sleep(5) 
                 
+                detection_message = check_x_account_status(session, mentioned_username)
+                
+                if detection_message and "X API認証エラー" in detection_message:
+                    send_telegram_message(detection_message)
+                    return
+                
+                if detection_message and "X API制限超過" in detection_message:
+                    send_telegram_message("🚫X API制限超過: 無料枠のリクエスト制限を超過したため、24時間後に再実行されます。")
+                    return 
+
+                if detection_message:
+                    notification_text = (
+                        f"【仮想通貨当選者 アカウント無し検知 (X API)】\n"
+                        f"異常内容: {detection_message}\n"
+                        f"当選者候補: @{mentioned_username}\n"
+                        f"該当ツイート: [ツイートはこちら]({tweet_url})"
+                    )
+                    send_telegram_message(notification_text)
+            
+            mark_tweet_as_checked(tweet_id)
+            
+        
     except HTTPError as e:
         status_code = e.response.status_code
-        error_msg = f"🚨検索URLアクセスエラー (Status: {status_code}): TwitterがBOTをブロックしている可能性があります。"
+        error_msg = f"🚨X API検索エラー (Status: {status_code}): APIキーや権限を確認してください。"
         send_telegram_message(error_msg)
         print(error_msg)
         
@@ -260,19 +260,17 @@ def scheduled_check():
 
 app = Flask(__name__)
 
-# アプリ起動時にDBセットアップを実行
 try:
     setup_database()
     scheduler = BackgroundScheduler()
     
-    # 【即時実行のトリガー】開始時刻を過去に設定することで、BOT起動時にジョブが即時実行されるように強制する
-    # デプロイ直後と、その後の15分間隔での実行を実現します。
+    # 【無料枠対応】実行間隔を1日1回に設定（即時実行トリガー付き）
     start_time = datetime.now() - timedelta(days=1)
     
     scheduler.add_job(
         scheduled_check, 
         'interval', 
-        seconds=900, # 15分ごと
+        days=1, # 1日ごと
         start_date=start_time.strftime('%Y-%m-%d %H:%M:%S')
     ) 
     
@@ -280,15 +278,14 @@ try:
 except Exception as e:
     print(f"BOT初期化失敗: {e}")
 
-# Web Serviceとしてプロセスを維持するためのシンプルなルート
 @app.route('/')
 def home():
     return jsonify({
-        "status": "running",
-        "service": "X Crypto Winner Compliance BOT (Scraping)",
-        "check_interval": "15 minutes"
+        "status": "running (X API V2 Free Tier Mode)",
+        "service": "X Crypto Winner Compliance BOT (API)",
+        "check_interval": "1 day",
+        "notice": "This mode is heavily constrained by X Free API limits (1500 req/month). Requires BEARER_TOKEN."
     })
 
 if __name__ == '__main__':
-    # Renderデプロイ時にはGunicornがこのプロセスを起動します
     app.run(host='0.0.0.0', port=os.environ.get('PORT', 5000))
