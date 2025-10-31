@@ -5,9 +5,10 @@ import psycopg2
 from flask import Flask, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
 from urllib.parse import urlparse
+from requests.exceptions import HTTPError, RequestException # エラーハンドリングのために追加
 
 # --- 環境変数から設定を取得 ---
-# これらはRenderの環境変数として設定する必要があります
+# これらの値はRenderの環境変数として設定する必要があります
 TWITTER_BEARER_TOKEN = os.environ.get("TWITTER_BEARER_TOKEN")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
@@ -16,7 +17,6 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 # 環境変数の必須チェック
 if not all([TWITTER_BEARER_TOKEN, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, DATABASE_URL]):
     print("エラー: 必要な環境変数が不足しています。デプロイ設定を確認してください。")
-    # 実際には、この後に Flask アプリケーションを終了させる処理が必要です
     
 # --- データベース接続関数 ---
 def get_db_connection():
@@ -52,7 +52,6 @@ def setup_database():
         print("DBセットアップ完了: checked_tweetsテーブルを確認/作成しました。")
     except Exception as e:
         print(f"DBセットアップ中にエラー: {e}")
-        # DB接続失敗は致命的なので、ここではエラーログを出力し、アプリを継続させます（Renderの監視に頼る）
     finally:
         if conn:
             conn.close()
@@ -92,7 +91,6 @@ def mark_tweet_as_checked(tweet_id):
 # --- X（Twitter）アカウントのステータス確認関数 ---
 def check_twitter_account(user_id, old_username):
     """アカウントの存在を確認し、削除/凍結をチェックする"""
-    # TWITTER_BEARER_TOKENは環境変数から取得
     url = f"https://api.twitter.com/2/users/{user_id}"
     headers = {"Authorization": f"Bearer {TWITTER_BEARER_TOKEN}"}
     
@@ -102,7 +100,7 @@ def check_twitter_account(user_id, old_username):
         if response.status_code == 200:
             return None # アカウントは存在する
         elif response.status_code == 404:
-            # 404 Not Found はアカウント削除または凍結（当選通知が行かない状態）
+            # 404 Not Found はアカウント削除または凍結
             return f"アカウント削除または凍結❌: (@{old_username})"
         else:
             # その他APIエラー
@@ -110,14 +108,13 @@ def check_twitter_account(user_id, old_username):
             error_msg = data.get('detail', f"Unknown Error (Status: {response.status_code})")
             return f"APIエラー⚠️ (Status: {response.status_code}): (@{old_username}) - {error_msg}"
             
-    except requests.exceptions.RequestException as e:
-        return f"ネットワークエラー: {e}"
+    except RequestException as e:
+        return f"ネットワークエラー: {e.__class__.__name__}"
 
 
 # --- Telegramにメッセージを送信する関数 ---
 def send_telegram_message(message):
     """Telegram Bot APIで指定のチャットIDにメッセージを送信する"""
-    # TELEGRAM_BOT_TOKENとTELEGRAM_CHAT_IDは環境変数から取得
     telegram_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         'chat_id': TELEGRAM_CHAT_ID,
@@ -130,8 +127,8 @@ def send_telegram_message(message):
         response = requests.post(telegram_url, json=payload)
         response.raise_for_status()
         print(f"Telegram通知成功: {message[:20]}...")
-    except requests.exceptions.RequestException as e:
-        print(f"Telegram通知失敗: {e}")
+    except RequestException as e:
+        print(f"Telegram通知失敗 (ネットワーク/API): {e}")
 
 # --- メインの定期実行ロジック ---
 def scheduled_check():
@@ -140,7 +137,6 @@ def scheduled_check():
     
     # 検索クエリの定義: 仮想通貨特化
     crypto_keywords = 'BTC OR ETH OR NFT OR エアドロ OR GiveAway OR Airdrop OR 仮想通貨 OR 暗号資産'
-    # has:mentions: メンションを含むツイートに絞り込むことで、当選発表の可能性を高める
     query = f'("{crypto_keywords}") ("当選" OR "DM" OR "おめでとう" OR "配布") has:mentions lang:ja -filter:retweets -filter:replies'
     
     # APIの制約と効率化のため、最新の100件をチェック
@@ -148,8 +144,10 @@ def scheduled_check():
     headers = {"Authorization": f"Bearer {TWITTER_BEARER_TOKEN}"}
     
     try:
+        # X APIへのリクエストを試行し、4xx/5xxの場合はHTTPError例外を発生させる
         response = requests.get(search_url, headers=headers)
-        response.raise_for_status()
+        response.raise_for_status() 
+
         data = response.json()
         
         if 'data' not in data:
@@ -159,7 +157,7 @@ def scheduled_check():
         for tweet in data['data']:
             tweet_id = int(tweet['id'])
             
-            # DBでチェック済みか確認し、重複ならスキップ (DB連携の最大の目的)
+            # DBでチェック済みか確認し、重複ならスキップ
             if is_tweet_checked(tweet_id):
                 continue
             
@@ -190,8 +188,22 @@ def scheduled_check():
             # 処理後、このツイートIDをDBに「チェック済み」として記録
             mark_tweet_as_checked(tweet_id)
 
-    except requests.exceptions.RequestException as e:
-        error_msg = f"🚨ツイート検索/APIエラーが発生: {e.__class__.__name__}"
+    except HTTPError as e:
+        # 4xx (Client Error) や 5xx (Server Error) の特定のエラー処理
+        status_code = e.response.status_code
+        error_msg = f"🚨X APIエラーが発生 (Status: {status_code}): TWITTER_BEARER_TOKENまたは権限を確認してください。"
+        send_telegram_message(error_msg)
+        print(error_msg)
+        
+    except RequestException as e:
+        # ネットワークレベルのエラー処理
+        error_msg = f"🚨ネットワーク接続エラーが発生: {e.__class__.__name__}"
+        send_telegram_message(error_msg)
+        print(error_msg)
+        
+    except Exception as e:
+        # その他の予期せぬエラー処理
+        error_msg = f"🚨予期せぬ実行時エラー: {e.__class__.__name__}: {str(e)}"
         send_telegram_message(error_msg)
         print(error_msg)
 
@@ -207,14 +219,12 @@ try:
     setup_database()
     scheduler = BackgroundScheduler()
     
-    # 初回起動時に即座に実行し、その後15分ごとに実行する設定
-    # next_run_time を指定しないため、scheduler.start() 時に即座に実行されます。
+    # 初回起動時に即座に実行し、その後15分ごとに実行する設定 (next_run_timeを省略することで即時実行される)
     scheduler.add_job(scheduled_check, 'interval', seconds=900) 
     
     scheduler.start()
 except Exception as e:
     print(f"BOT初期化失敗: {e}")
-    # 初期化失敗時はスケジューラを起動しない
 
 # Web Serviceとしてプロセスを維持するためのシンプルなルート
 @app.route('/')
