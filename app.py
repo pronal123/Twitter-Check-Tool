@@ -7,6 +7,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from urllib.parse import urlparse
 from requests.exceptions import HTTPError, RequestException 
 from datetime import datetime, timedelta
+import threading # 起動直後の実行を確実にするため追加
 
 # X API Base URL
 X_API_URL = "https://api.twitter.com/2"
@@ -277,10 +278,20 @@ try:
         start_date=start_time.strftime('%Y-%m-%d %H:%M:%S')
     ) 
     
-    # 【デバッグ強化】ジョブのスケジューリング完了を明示
     print(f"✅ APScheduler: ジョブ '{job.id}' が1日ごとの実行にスケジュールされました。")
     
     scheduler.start()
+    
+    # 【最終デバッグ策】ワーカープロセスで即時実行を強制
+    def force_run_on_startup():
+        # gunicornのワーカー起動を待つための短い遅延
+        time.sleep(1) 
+        print("💡 起動直後の即時実行をスレッドで強制します...")
+        scheduled_check()
+    
+    # 起動を妨げないよう、新しいスレッドで実行
+    threading.Thread(target=force_run_on_startup).start()
+
 except Exception as e:
     print(f"BOT初期化失敗: {e}")
 
