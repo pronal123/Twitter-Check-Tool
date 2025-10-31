@@ -5,7 +5,8 @@ import psycopg2
 from flask import Flask, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
 from urllib.parse import urlparse
-from requests.exceptions import HTTPError, RequestException # エラーハンドリングのために追加
+from requests.exceptions import HTTPError, RequestException 
+from datetime import datetime, timedelta # datetimeモジュールを追加
 
 # --- 環境変数から設定を取得 ---
 # これらの値はRenderの環境変数として設定する必要があります
@@ -219,8 +220,15 @@ try:
     setup_database()
     scheduler = BackgroundScheduler()
     
-    # 初回起動時に即座に実行し、その後15分ごとに実行する設定 (next_run_timeを省略することで即時実行される)
-    scheduler.add_job(scheduled_check, 'interval', seconds=900) 
+    # 実行開始時刻を「現在から1日前の過去の時刻」に設定し、起動直後にジョブが実行されるように強制します。
+    start_time = datetime.now() - timedelta(days=1)
+    
+    scheduler.add_job(
+        scheduled_check, 
+        'interval', 
+        seconds=900, 
+        start_date=start_time.strftime('%Y-%m-%d %H:%M:%S') # 過去の時刻を強制的に設定
+    ) 
     
     scheduler.start()
 except Exception as e:
