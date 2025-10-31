@@ -7,7 +7,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from urllib.parse import urlparse
 from requests.exceptions import HTTPError, RequestException 
 from datetime import datetime, timedelta
-import threading # 起動直後の実行を確実にするため追加
+import threading 
 
 # X API Base URL
 X_API_URL = "https://api.twitter.com/2"
@@ -225,7 +225,7 @@ def scheduled_check():
                     return
                 
                 if detection_message and "X API制限超過" in detection_message:
-                    send_telegram_message("🚫X API制限超過: 無料枠のリクエスト制限を超過したため、24時間後に再実行されます。")
+                    send_telegram_message("🚫X API制限超過: 無料枠のリクエスト制限を超過したため、次のスケジュールまでスキップします。")
                     return 
 
                 if detection_message:
@@ -268,21 +268,21 @@ try:
     setup_database()
     scheduler = BackgroundScheduler()
     
-    # 実行間隔を1日1回に設定（即時実行トリガー付き）
-    start_time = datetime.now() - timedelta(days=1)
+    # 実行間隔を1時間1回に変更
+    start_time = datetime.now() - timedelta(hours=1)
     
     job = scheduler.add_job(
         scheduled_check, 
         'interval', 
-        days=1, # 1日ごと
+        hours=1, # 1時間ごと
         start_date=start_time.strftime('%Y-%m-%d %H:%M:%S')
     ) 
     
-    print(f"✅ APScheduler: ジョブ '{job.id}' が1日ごとの実行にスケジュールされました。")
+    print(f"✅ APScheduler: ジョブ '{job.id}' が1時間ごとの実行にスケジュールされました。")
     
     scheduler.start()
     
-    # 【最終デバッグ策】ワーカープロセスで即時実行を強制
+    # 起動直後の即時実行をスレッドで強制
     def force_run_on_startup():
         # gunicornのワーカー起動を待つための短い遅延
         time.sleep(1) 
@@ -300,8 +300,8 @@ def home():
     return jsonify({
         "status": "running (X API V2 Free Tier Mode)",
         "service": "X Crypto Winner Compliance BOT (API)",
-        "check_interval": "1 day",
-        "notice": "This mode is heavily constrained by X Free API limits (1500 req/month). Requires BEARER_TOKEN."
+        "check_interval": "1 hour", # レスポンスも更新
+        "notice": "This mode is heavily constrained by X Free API limits (1500 req/month)."
     })
 
 if __name__ == '__main__':
