@@ -1,5 +1,5 @@
-Flask
-requests
-APScheduler
-gunicorn
-psycopg2-binary  # PostgreSQL接続用
+Flask==3.0.4
+requests~=2.31.0
+APScheduler~=3.10.0
+gunicorn~=21.2.0
+psycopg2-binary
