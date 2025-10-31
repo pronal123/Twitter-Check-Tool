@@ -6,17 +6,18 @@ from flask import Flask, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
 from urllib.parse import urlparse
 from requests.exceptions import HTTPError, RequestException 
-from datetime import datetime, timedelta # datetimeモジュールを追加
+from datetime import datetime, timedelta
+from bs4 import BeautifulSoup # スクレイピングライブラリを追加
 
 # --- 環境変数から設定を取得 ---
 # これらの値はRenderの環境変数として設定する必要があります
-TWITTER_BEARER_TOKEN = os.environ.get("TWITTER_BEARER_TOKEN")
+# TWITTER_BEARER_TOKEN は不要になりました
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
 # 環境変数の必須チェック
-if not all([TWITTER_BEARER_TOKEN, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, DATABASE_URL]):
+if not all([TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, DATABASE_URL]):
     print("エラー: 必要な環境変数が不足しています。デプロイ設定を確認してください。")
     
 # --- データベース接続関数 ---
@@ -43,9 +44,10 @@ def setup_database():
         cursor = conn.cursor()
         
         # 'checked_tweets' テーブルを作成し、ツイートIDをプライマリキーとして重複を防止
+        # スクレイピングのためツイートIDの取得が不安定な点に注意
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS checked_tweets (
-                tweet_id BIGINT PRIMARY KEY,
+                tweet_id TEXT PRIMARY KEY,
                 created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP
             );
         """)
@@ -88,26 +90,43 @@ def mark_tweet_as_checked(tweet_id):
         if conn:
             conn.close()
 
-
-# --- X（Twitter）アカウントのステータス確認関数 ---
-def check_twitter_account(user_id, old_username):
-    """アカウントの存在を確認し、削除/凍結をチェックする"""
-    url = f"https://api.twitter.com/2/users/{user_id}"
-    headers = {"Authorization": f"Bearer {TWITTER_BEARER_TOKEN}"}
+# --- アカウントのステータス確認（スクレイピングによる代替） ---
+def check_twitter_account_by_scrape(username):
+    """ユーザーのプロフィールページをチェックし、凍結/削除を判断する（スクレイピング）"""
+    url = f"https://twitter.com/{username}"
+    
+    # ユーザーエージェントを設定し、ボットではないように偽装
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    }
     
     try:
-        response = requests.get(url, headers=headers)
+        response = requests.get(url, headers=headers, timeout=10)
         
-        if response.status_code == 200:
-            return None # アカウントは存在する
-        elif response.status_code == 404:
-            # 404 Not Found はアカウント削除または凍結
-            return f"アカウント削除または凍結❌: (@{old_username})"
-        else:
-            # その他APIエラー
-            data = response.json()
-            error_msg = data.get('detail', f"Unknown Error (Status: {response.status_code})")
-            return f"APIエラー⚠️ (Status: {response.status_code}): (@{old_username}) - {error_msg}"
+        if response.status_code == 404:
+            # 404 Not Found はアカウント削除の可能性が高い
+            return f"アカウント削除の可能性❌: (@{username})"
+            
+        # ログイン画面へリダイレクトされたり、API制限画面が出た場合も失敗とする
+        if 'login' in response.url.lower() or 'captcha' in response.text.lower():
+            return f"スクレイピング制限/認証要求⚠️: (@{username})"
+            
+        # HTMLから特定の文字列をチェック（非常に不安定）
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # 凍結/削除されたアカウントの典型的な表示をチェック
+        if soup.find('span', string=lambda t: t and ('このアカウントは凍結されています' in t or 'アカウントは存在しません' in t)):
+             return f"アカウント凍結/削除の可能性❌: (@{username})"
+
+        # ツイートの本文が存在する場合、アカウントは有効と見なす
+        if soup.find('div', {'data-testid': 'tweetText'}):
+             return None # アカウントは存在する
+        
+        # その他のエラーチェック
+        if soup.title and ("Something went wrong" in soup.title.string or "Error" in soup.title.string):
+            return f"ページ解析エラー⚠️: (@{username})"
+            
+        return None # デフォルトではアカウントは存在すると見なす
             
     except RequestException as e:
         return f"ネットワークエラー: {e.__class__.__name__}"
@@ -131,68 +150,106 @@ def send_telegram_message(message):
     except RequestException as e:
         print(f"Telegram通知失敗 (ネットワーク/API): {e}")
 
-# --- メインの定期実行ロジック ---
+# --- メインの定期実行ロジック (スクレイピング版) ---
 def scheduled_check():
-    """仮想通貨関連の当選ツイートを検索し、アカウントが存在しない当選者をチェックする"""
-    print(f"--- 仮想通貨特化検知実行開始: {time.ctime()} ---")
+    """仮想通貨関連の当選ツイートを検索し、アカウントが存在しない当選者をチェックする (スクレイピング版)"""
+    print(f"--- 仮想通貨特化検知実行開始 (スクレイピング): {time.ctime()} ---")
     
     # 検索クエリの定義: 仮想通貨特化
-    crypto_keywords = 'BTC OR ETH OR NFT OR エアドロ OR GiveAway OR Airdrop OR 仮想通貨 OR 暗号資産'
-    query = f'("{crypto_keywords}") ("当選" OR "DM" OR "おめでとう" OR "配布") has:mentions lang:ja -filter:retweets -filter:replies'
+    # URLエンコードされた検索クエリ
+    encoded_query = 'BTC+OR+ETH+OR+NFT+OR+%E3%82%A8%E3%82%A2%E3%83%89%E3%83%AD+OR+GiveAway+OR+Airdrop+OR+%E4%BB%AE%E6%83%B3%E9%80%9A%E8%B2%A8+OR+%E6%9A%97%E5%8F%B7%E8%B3%87%E7%94%A3+%28%22%E5%BD%93%E9%81%B8%22+OR+%22DM%22+OR+%22%E3%81%8A%E3%82%81%E3%81%A7%E3%81%A8%E3%81%86%22+OR+%22%E9%85%8D%E5%B8%83%22%29'
     
-    # APIの制約と効率化のため、最新の100件をチェック
-    search_url = f"https://api.twitter.com/2/tweets/search/recent?query={query}&max_results=100&tweet.fields=entities&expansions=author_id"
-    headers = {"Authorization": f"Bearer {TWITTER_BEARER_TOKEN}"}
+    # 検索URL (最新のツイート順にソート)
+    search_url = f"https://twitter.com/search?q={encoded_query}&f=live"
+    
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    }
     
     try:
-        # X APIへのリクエストを試行し、4xx/5xxの場合はHTTPError例外を発生させる
-        response = requests.get(search_url, headers=headers)
+        response = requests.get(search_url, headers=headers, timeout=20)
         response.raise_for_status() 
 
-        data = response.json()
+        # HTMLをBeautifulSoupで解析
+        soup = BeautifulSoup(response.text, 'html.parser')
         
-        if 'data' not in data:
-            print("検索結果なし。")
+        # ページがログインを要求しているかチェック
+        if soup.find('input', {'name': 'session[username_or_email]'}):
+             print("スクレイピング失敗: Twitterがログインを要求しています。")
+             send_telegram_message("🚨スクレイピングエラー: TwitterがログインまたはCAPTCHAを要求しています。BOTを停止/チェックしてください。")
+             return
+
+        # ツイートの要素を特定
+        tweets = soup.find_all('div', {'data-testid': 'tweet'})
+        
+        if not tweets:
+            print("検索結果からツイート要素を抽出できませんでした。セレクタを確認してください。")
             return
 
-        for tweet in data['data']:
-            tweet_id = int(tweet['id'])
+        for tweet_element in tweets[:20]: # 取得したうちの最初の20件だけをチェック
             
-            # DBでチェック済みか確認し、重複ならスキップ
-            if is_tweet_checked(tweet_id):
-                continue
-            
-            tweet_author_id = tweet.get('author_id', '不明')
-            tweet_url = f"https://twitter.com/i/web/status/{tweet_id}"
-            
-            # ツイートからメンションされているユーザーを抽出
-            if 'entities' in tweet and 'mentions' in tweet['entities']:
-                for mention in tweet['entities']['mentions']:
-                    mentioned_id = mention['id']
-                    mentioned_username = mention['username']
+            # --- ツイート情報とメンションの抽出 ---
+            try:
+                # ツイートリンクからユーザー名とIDを取得する
+                # data-testid="tweet" 内の最初のリンク（通常、タイムスタンプリンク）を使用
+                tweet_link = tweet_element.find('a', href=lambda href: href and '/status/' in href)
+                if not tweet_link: continue
+
+                href = tweet_link.get('href')
+                parts = href.split('/')
+                
+                # URL構造: /username/status/1234567890
+                if len(parts) < 4: continue
+                
+                tweet_author_username = parts[1]
+                tweet_id = parts[3] 
+                
+                tweet_url = f"https://twitter.com/{tweet_author_username}/status/{tweet_id}"
+                
+                # メンションされているユーザー名のリストを生成
+                mentioned_usernames = []
+                # ツイート本文内の a タグで href が /@から始まるものをメンションとみなす
+                for link in tweet_element.find_all('a'):
+                    link_href = link.get('href')
+                    # メンションリンクは /@username の形式（ただし、これは不安定な推測）
+                    if link_href and link_href.startswith('/@'):
+                        mentioned_usernames.append(link_href.lstrip('/@'))
+
+                if not mentioned_usernames:
+                    continue # メンションがないツイートはスキップ
+
+                # DBチェック (スクレイピングでは信頼性が低いため、DBのデータ型をTEXTに変更済)
+                if is_tweet_checked(tweet_id):
+                    continue
+
+                # メンションされたユーザーをチェック
+                for mentioned_username in mentioned_usernames:
                     
-                    # メンションされたユーザーのアカウント状態をチェック
-                    detection_message = check_twitter_account(mentioned_id, mentioned_username)
+                    # メンションされたユーザーのアカウント状態をチェック（スクレイピング）
+                    detection_message = check_twitter_account_by_scrape(mentioned_username)
                     
                     if detection_message:
                         # 異常が検知された場合、Telegramに通知
                         notification_text = (
-                            f"【仮想通貨当選者 アカウント無し検知】\n"
+                            f"【仮想通貨当選者 アカウント無し検知 (スクレイピング)】\n"
                             f"異常内容: {detection_message}\n"
-                            f"該当ツイートの主催者ID: {tweet_author_id}\n"
+                            f"該当ツイートの主催者ユーザー: @{tweet_author_username}\n"
                             f"該当ツイート: [ツイートはこちら]({tweet_url})"
                         )
                         send_telegram_message(notification_text)
                     
-                    time.sleep(1) # APIのレート制限回避のため待機
+                    time.sleep(2) # レート制限回避のため待機
             
-            # 処理後、このツイートIDをDBに「チェック済み」として記録
-            mark_tweet_as_checked(tweet_id)
-
+                # 処理後、このツイートIDをDBに「チェック済み」として記録
+                mark_tweet_as_checked(tweet_id)
+                
+            except Exception as e:
+                print(f"個別のツイート処理中にエラー: {e}")
+                
     except HTTPError as e:
         # 4xx (Client Error) や 5xx (Server Error) の特定のエラー処理
         status_code = e.response.status_code
-        error_msg = f"🚨X APIエラーが発生 (Status: {status_code}): TWITTER_BEARER_TOKENまたは権限を確認してください。"
+        error_msg = f"🚨検索URLアクセスエラー (Status: {status_code}): TwitterがBOTをブロックしている可能性があります。"
         send_telegram_message(error_msg)
         print(error_msg)
         
@@ -223,11 +280,12 @@ try:
     # 実行開始時刻を「現在から1日前の過去の時刻」に設定し、起動直後にジョブが実行されるように強制します。
     start_time = datetime.now() - timedelta(days=1)
     
+    # スケジュール実行関数をスクレイピング版に変更
     scheduler.add_job(
         scheduled_check, 
         'interval', 
         seconds=900, 
-        start_date=start_time.strftime('%Y-%m-%d %H:%M:%S') # 過去の時刻を強制的に設定
+        start_date=start_time.strftime('%Y-%m-%d %H:%M:%S')
     ) 
     
     scheduler.start()
@@ -239,7 +297,7 @@ except Exception as e:
 def home():
     return jsonify({
         "status": "running",
-        "service": "X Crypto Winner Compliance BOT",
+        "service": "X Crypto Winner Compliance BOT (Scraping)",
         "check_interval": "15 minutes"
     })
 
