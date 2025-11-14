@@ -1,11 +1,11 @@
-# app.py (最終完全版)
+# app.py (初回即時実行版)
 
 import os
 from flask import Flask
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime
 from dotenv import load_dotenv 
-from futures_ml_bot import FuturesMLBot, fetch_futures_metrics, FUTURES_SYMBOL
+from futures_ml_bot import FuturesMLBot, fetch_advanced_metrics, FUTURES_SYMBOL
 
 # ローカルテスト時に .env ファイルを読み込む
 load_dotenv() 
@@ -35,9 +35,10 @@ def run_prediction_and_notify():
     try:
         print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚙️ 予測タスク開始...")
         
-        futures_data = fetch_futures_metrics(bot.exchange, FUTURES_SYMBOL)
+        # 高度な分析指標を取得
+        advanced_data = fetch_advanced_metrics(bot.exchange, FUTURES_SYMBOL)
         df_latest = bot.fetch_ohlcv_data(limit=100) 
-        bot.predict_and_report(df_latest, futures_data)
+        bot.predict_and_report(df_latest, advanced_data)
         
         print("✅ 予測・通知タスク完了。")
              
@@ -72,14 +73,19 @@ def start_scheduler():
     # 🚨 初回起動通知
     boot_message = (
         "✅ **BOT起動成功とスケジューラ設定完了**\n\n"
-        f"サービス名: MEXC分析BOT\n"
+        f"サービス名: MEXC分析BOT (高度分析バージョン)\n"
         f"予測間隔: {PREDICTION_INTERVAL_HOURS}時間ごと\n"
         f"再学習間隔: {RETRAIN_INTERVAL_HOURS}時間ごと\n\n"
-        "間もなく初回または定時予測タスクが実行されます。"
+        "**⚡ 初回分析をただちに実行します。**" # メッセージを更新
     )
-    bot.send_telegram_notification(boot_message) # 通知ロジックにエラーチェックが含まれます
+    bot.send_telegram_notification(boot_message)
 
-    # ジョブの追加
+    # ⚡ 【初回即時実行】通知後、すぐに最初の分析を実行する
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚡ 初回起動時の即時予測を実行中...")
+    run_prediction_and_notify() 
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ 初回起動時の即時予測が完了しました。")
+    
+    # ジョブの追加 (2回目以降の定時実行)
     scheduler.add_job(func=run_prediction_and_notify, trigger='interval', hours=PREDICTION_INTERVAL_HOURS, id='prediction_job')
     scheduler.add_job(func=run_retrain_and_improve, trigger='interval', hours=RETRAIN_INTERVAL_HOURS, id='retrain_job')
 
