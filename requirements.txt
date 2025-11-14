@@ -8,3 +8,4 @@ requests
 joblib
 Flask
 APScheduler
+python-dotenv
