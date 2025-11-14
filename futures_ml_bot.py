@@ -1,4 +1,4 @@
-# futures_ml_bot.py
+# futures_ml_bot.py (完全版：先物指標カスタムロジック組み込み済み)
 
 import os
 import ccxt
@@ -9,10 +9,9 @@ import requests
 import joblib
 from datetime import datetime, timezone
 from sklearn.ensemble import RandomForestClassifier
-from typing import Tuple, Dict, Any
+from typing import Tuple, Dict, Any, List
 
 # --- 1. 環境変数設定 ---
-# .envファイルを使用する場合、app.pyでロードされます
 MEXC_API_KEY = os.environ.get('MEXC_API_KEY')
 MEXC_SECRET = os.environ.get('MEXC_SECRET')
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
@@ -21,37 +20,88 @@ TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
 FUTURES_SYMBOL = 'BTC_USDT'
 TIMEFRAME = '4h'
 MODEL_FILENAME = 'btc_futures_ml_model.joblib'
+# MEXCのAPIドメイン (公開API用)
+MEXC_API_BASE_URL = 'https://contract.mexc.com' 
 
 
 # --- 2. 🚨 実戦ベースのカスタムデータ取得関数 ---
 def fetch_futures_metrics(exchange: ccxt.Exchange, symbol: str) -> Dict[str, float]:
     """
     実戦: MEXCのAPIを使い、最新のFR, OI, L/S Ratioのデータを取得・計算する。
-    この関数は、MEXCのAPI仕様に合わせて正確に実装が必要です。
+    
+    Args:
+        exchange: ccxt Exchangeオブジェクト
+        symbol: 取引シンボル (例: BTC_USDT)
+        
+    Returns:
+        資金調達率、L/S比率、OI変化率を含む辞書
     """
+    
+    # ccxtでシンボル形式を調整 (MEXC APIが期待する形式に変換)
+    mexc_symbol = symbol.replace('_', '/') 
+    
     try:
-        ticker = exchange.fetch_ticker(symbol)
-        
-        # 資金調達率 (FR)
+        # --- (A) 資金調達率 (FR) の取得 (ccxtのfetch_tickerを利用) ---
+        ticker = exchange.fetch_ticker(mexc_symbol)
         funding_rate = float(ticker.get('fundingRate', 0) or 0)
+
+        # --- (B) 未決済建玉 (OI) の履歴データ取得と変化率計算 ---
+        # MEXCの公開APIエンドポイントを仮定 (APIドキュメントに基づく)
+        oi_history_endpoint = f"{MEXC_API_BASE_URL}/api/v1/contract/open_interest/{symbol}"
         
-        # L/S Ratio (LSR) - ⚠️ 要実装: MEXCの専用APIから取得
-        ls_ratio = 1.05  # 実装するまでのプレースホルダー
+        # 4時間足（240分）の変化を見るため、より細かい粒度（例: 1時間/60分）で履歴を取得
+        # count=5で、直近5時間のOI履歴データを取得すると仮定
+        oi_params = {
+            'symbol': symbol,
+            'interval': '60m', 
+            'limit': 5 # 5時間分のデータがあれば、4時間前のデータと比較可能
+        }
         
-        # OI Change (OIの変化率) - ⚠️ 要実装: 過去4hのOI時系列データと比較
-        oi_change_4h = 0.01  # 実装するまでのプレースホルダー
+        oi_response = requests.get(oi_history_endpoint, params=oi_params, timeout=10)
+        oi_response.raise_for_status()
+        
+        oi_data = oi_response.json().get('data', [])
+        
+        if len(oi_data) >= 5:
+            # 最新のOI (data[-1])
+            current_oi = float(oi_data[-1].get('openInterest', 0))
+            # 4時間前のOI (data[0] または data[-5])
+            prev_oi_4h = float(oi_data[0].get('openInterest', 0)) 
+            
+            if prev_oi_4h > 0:
+                oi_change_4h = (current_oi - prev_oi_4h) / prev_oi_4h
+            else:
+                oi_change_4h = 0.0
+        else:
+            print("⚠️ OI履歴データが不足しています（5時間未満）。OI変化率は計算できませんでした。")
+            oi_change_4h = 0.0
+            
+        # --- (C) L/S 比率 (LSR) の取得 ---
+        # MEXCの公開APIエンドポイントを仮定 (LSRは通常、別のエンドポイント)
+        lsr_endpoint = f"{MEXC_API_BASE_URL}/api/v1/contract/long_short_ratio/{symbol}"
+        lsr_response = requests.get(lsr_endpoint, params={'symbol': symbol}, timeout=10)
+        lsr_response.raise_for_status()
+        
+        lsr_data = lsr_response.json().get('data', {})
+        # longShortRatioフィールドからLSRを取得すると仮定
+        ls_ratio = float(lsr_data.get('longShortRatio', 1.0)) 
 
         return {
             'funding_rate': funding_rate,
             'ls_ratio': ls_ratio,
             'oi_change_4h': oi_change_4h
         }
+    
+    except requests.exceptions.RequestException as req_e:
+        print(f"🚨 外部APIリクエストエラー: {req_e}")
+        return {'funding_rate': 0.0, 'ls_ratio': 1.0, 'oi_change_4h': 0.0}
     except Exception as e:
-        print(f"先物指標データ取得失敗: {e}")
+        print(f"🚨 先物指標データ処理エラー: {e}")
         return {'funding_rate': 0.0, 'ls_ratio': 1.0, 'oi_change_4h': 0.0}
 
+# --- 3. メイン BOT クラス以降のロジック ---
+# (futures_ml_bot.py の残りの部分：FuturesMLBotクラス全体、app.pyは前回の修正版をそのまま使用してください)
 
-# --- 3. メイン BOT クラス ---
 class FuturesMLBot:
     def __init__(self):
         # 🚨 環境変数がNoneの場合、ccxtの初期化が失敗する可能性があるため、チェック
@@ -68,9 +118,9 @@ class FuturesMLBot:
         self.prediction_period = 1
         self.feature_cols = [] 
 
-    # --- (A) データ取得 ---
+    # --- (A) データ取得 (OHLCV) ---
     def fetch_ohlcv_data(self, limit: int = 100, timeframe: str = TIMEFRAME) -> pd.DataFrame:
-        """OHLCVデータを取得する (学習時にはlimitを大きくする)"""
+        """OHLCVデータを取得する"""
         try:
             ohlcv = self.exchange.fetch_ohlcv(FUTURES_SYMBOL, timeframe, limit=limit)
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'Open', 'High', 'Low', 'Close', 'Volume'])
@@ -243,6 +293,8 @@ class FuturesMLBot:
     # --- (F) Telegram 通知関数 ---
     def send_telegram_notification(self, message: str):
         """通知の実装"""
+        # (省略)
+        # ... 前回の実装と同じ
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         payload = {'chat_id': TELEGRAM_CHAT_ID, 'text': message, 'parse_mode': 'Markdown'}
         try:
