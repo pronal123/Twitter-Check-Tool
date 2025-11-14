@@ -1,7 +1,8 @@
-Flask==3.1.2
-requests~=2.31.0
-APScheduler~=3.10.0
-gunicorn~=21.2.0
-psycopg2-binary
-beautifulsoup4
-lxml
+# requirements.txt
+pandas
+ccxt
+pandas-ta
+scikit-learn
+numpy
+requests
+joblib
