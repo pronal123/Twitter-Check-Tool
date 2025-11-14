@@ -1,10 +1,11 @@
-# app.py (初回即時実行版)
+# app.py (最終完全版)
 
 import os
 from flask import Flask
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime
 from dotenv import load_dotenv 
+# 🚨 fetch_advanced_metrics を正しくインポート
 from futures_ml_bot import FuturesMLBot, fetch_advanced_metrics, FUTURES_SYMBOL
 
 # ローカルテスト時に .env ファイルを読み込む
@@ -76,7 +77,7 @@ def start_scheduler():
         f"サービス名: MEXC分析BOT (高度分析バージョン)\n"
         f"予測間隔: {PREDICTION_INTERVAL_HOURS}時間ごと\n"
         f"再学習間隔: {RETRAIN_INTERVAL_HOURS}時間ごと\n\n"
-        "**⚡ 初回分析をただちに実行します。**" # メッセージを更新
+        "**⚡ 初回分析をただちに実行します。**"
     )
     bot.send_telegram_notification(boot_message)
 
