@@ -1,4 +1,4 @@
-# app.py (修正版)
+# app.py (最終完全版)
 
 import os
 from flask import Flask
@@ -7,7 +7,7 @@ from datetime import datetime
 from dotenv import load_dotenv 
 from futures_ml_bot import FuturesMLBot, fetch_futures_metrics, FUTURES_SYMBOL
 
-# ローカルテスト時に .env ファイルを読み込む
+# ローカルテスト時に .env ファイルを読み込む (Renderでは環境変数が直接使用されます)
 load_dotenv() 
 
 # --- 環境変数設定 ---
@@ -18,14 +18,14 @@ PREDICTION_INTERVAL_HOURS = int(os.environ.get('PREDICTION_INTERVAL_HOURS', 1))
 app = Flask(__name__)
 scheduler = BackgroundScheduler()
 
-# 🚨 BOTの初期化 (APIキーチェックとccxt接続がここで行われる)
+# 🚨 BOTの初期化 (BOTインスタンスはグローバルに保持)
 bot = None
 try:
     bot = FuturesMLBot() 
 except ValueError as e:
     print(f"致命的な初期化エラー: {e}")
     
-# --- 予測実行タスク (1時間ごと) ---
+# --- 予測実行タスク (定時) ---
 def run_prediction_and_notify():
     """予測を実行し、Telegramに通知する関数"""
     if bot is None:
@@ -35,7 +35,6 @@ def run_prediction_and_notify():
     try:
         print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚙️ 予測タスク開始...")
         
-        # 🚨 実装された fetch_futures_metrics を呼び出す
         futures_data = fetch_futures_metrics(bot.exchange, FUTURES_SYMBOL)
         df_latest = bot.fetch_ohlcv_data(limit=100) 
         bot.predict_and_report(df_latest, futures_data)
@@ -45,7 +44,7 @@ def run_prediction_and_notify():
     except Exception as e:
         print(f"🚨 予測タスクエラー: {e}")
 
-# --- モデル再学習タスク (24時間ごと) ---
+# --- モデル再学習タスク (定時) ---
 def run_retrain_and_improve():
     """モデルの再学習と構築を行う関数"""
     if bot is None:
@@ -70,6 +69,17 @@ def start_scheduler():
 
     print("--- スケジューラ設定開始 ---")
 
+    # 🚨 初回起動通知
+    boot_message = (
+        "✅ **BOT起動成功とスケジューラ設定完了**\n\n"
+        f"サービス名: MEXC分析BOT\n"
+        f"予測間隔: {PREDICTION_INTERVAL_HOURS}時間ごと\n"
+        f"再学習間隔: {RETRAIN_INTERVAL_HOURS}時間ごと\n\n"
+        "間もなく初回または定時予測タスクが実行されます。"
+    )
+    bot.send_telegram_notification(boot_message)
+
+    # ジョブの追加
     scheduler.add_job(func=run_prediction_and_notify, trigger='interval', hours=PREDICTION_INTERVAL_HOURS, id='prediction_job')
     scheduler.add_job(func=run_retrain_and_improve, trigger='interval', hours=RETRAIN_INTERVAL_HOURS, id='retrain_job')
 
