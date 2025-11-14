@@ -7,12 +7,12 @@ import pandas_ta as ta
 import numpy as np
 import requests
 import joblib
-import typing
 from datetime import datetime, timezone
 from sklearn.ensemble import RandomForestClassifier
 from typing import Tuple, Dict, Any
 
 # --- 1. 環境変数設定 ---
+# .envファイルを使用する場合、app.pyでロードされます
 MEXC_API_KEY = os.environ.get('MEXC_API_KEY')
 MEXC_SECRET = os.environ.get('MEXC_SECRET')
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
@@ -30,18 +30,15 @@ def fetch_futures_metrics(exchange: ccxt.Exchange, symbol: str) -> Dict[str, flo
     この関数は、MEXCのAPI仕様に合わせて正確に実装が必要です。
     """
     try:
-        # ccxtのfetch_ticker, fetch_funding_rate, fetch_open_interestなどを利用
         ticker = exchange.fetch_ticker(symbol)
         
         # 資金調達率 (FR)
         funding_rate = float(ticker.get('fundingRate', 0) or 0)
         
         # L/S Ratio (LSR) - ⚠️ 要実装: MEXCの専用APIから取得
-        # 例: ls_ratio = exchange.fetch_public_futures_data('ls_ratio')['value']
         ls_ratio = 1.05  # 実装するまでのプレースホルダー
         
         # OI Change (OIの変化率) - ⚠️ 要実装: 過去4hのOI時系列データと比較
-        # 例: oi_change_4h = (current_oi - prev_oi) / prev_oi
         oi_change_4h = 0.01  # 実装するまでのプレースホルダー
 
         return {
@@ -57,6 +54,10 @@ def fetch_futures_metrics(exchange: ccxt.Exchange, symbol: str) -> Dict[str, flo
 # --- 3. メイン BOT クラス ---
 class FuturesMLBot:
     def __init__(self):
+        # 🚨 環境変数がNoneの場合、ccxtの初期化が失敗する可能性があるため、チェック
+        if not all([MEXC_API_KEY, MEXC_SECRET]):
+             raise ValueError("APIキーが設定されていません。環境変数を確認してください。")
+             
         self.exchange = ccxt.mexc({
             'apiKey': MEXC_API_KEY,
             'secret': MEXC_SECRET,
