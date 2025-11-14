@@ -1,10 +1,10 @@
-# app.py
+# app.py (修正版)
 
 import os
 from flask import Flask
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime
-from dotenv import load_dotenv # .env ファイルの読み込み用 (ローカルテスト用)
+from dotenv import load_dotenv 
 from futures_ml_bot import FuturesMLBot, fetch_futures_metrics, FUTURES_SYMBOL
 
 # ローカルテスト時に .env ファイルを読み込む
@@ -18,13 +18,12 @@ PREDICTION_INTERVAL_HOURS = int(os.environ.get('PREDICTION_INTERVAL_HOURS', 1))
 app = Flask(__name__)
 scheduler = BackgroundScheduler()
 
-# 🚨 BOTの初期化 (環境変数チェックとccxt接続がここで行われる)
+# 🚨 BOTの初期化 (APIキーチェックとccxt接続がここで行われる)
+bot = None
 try:
     bot = FuturesMLBot() 
 except ValueError as e:
     print(f"致命的な初期化エラー: {e}")
-    # 初期化失敗時はWebサービスを起動しない
-    bot = None
     
 # --- 予測実行タスク (1時間ごと) ---
 def run_prediction_and_notify():
@@ -36,6 +35,7 @@ def run_prediction_and_notify():
     try:
         print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚙️ 予測タスク開始...")
         
+        # 🚨 実装された fetch_futures_metrics を呼び出す
         futures_data = fetch_futures_metrics(bot.exchange, FUTURES_SYMBOL)
         df_latest = bot.fetch_ohlcv_data(limit=100) 
         bot.predict_and_report(df_latest, futures_data)
@@ -55,7 +55,6 @@ def run_retrain_and_improve():
     try:
         print(f"[{datetime.now().strftime('%H:%M:%S')}] 🧠 再学習タスク開始...")
         
-        # ⚠️ 長期データを取得 (Renderの無料ティアの制限に注意)
         df_long_term = bot.fetch_ohlcv_data(limit=2000) 
         bot.train_and_save_model(df_long_term)
         
@@ -71,10 +70,7 @@ def start_scheduler():
 
     print("--- スケジューラ設定開始 ---")
 
-    # 予測ジョブの追加
     scheduler.add_job(func=run_prediction_and_notify, trigger='interval', hours=PREDICTION_INTERVAL_HOURS, id='prediction_job')
-    
-    # 再学習ジョブの追加
     scheduler.add_job(func=run_retrain_and_improve, trigger='interval', hours=RETRAIN_INTERVAL_HOURS, id='retrain_job')
 
     scheduler.start()
@@ -86,8 +82,7 @@ def health_check():
     return "ML Bot Scheduler is running!" if bot else "ML Bot Initialization Failed.", 200
 
 if __name__ == '__main__':
-    # 🚨 修正点: スケジューラを同期的に起動してから、Flaskアプリをメインスレッドで実行
+    # スケジューラを同期的に起動してから、Flaskアプリをメインスレッドで実行
     start_scheduler()
     
-    # Flaskアプリを起動
     app.run(host='0.0.0.0', port=WEB_SERVICE_PORT)
