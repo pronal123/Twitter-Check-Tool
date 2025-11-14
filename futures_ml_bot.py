@@ -1,4 +1,4 @@
-# futures_ml_bot.py (高度分析改良版)
+# futures_ml_bot.py (最終完全版)
 
 import os
 import ccxt
@@ -22,20 +22,25 @@ TIMEFRAME = '4h'
 MODEL_FILENAME = 'btc_futures_ml_model.joblib'
 MEXC_API_BASE_URL = 'https://contract.mexc.com' 
 
-# --- 2. 実戦ベースのカスタムデータ取得関数 (変更なし) ---
+
+# --- 2. 実戦ベースのカスタムデータ取得関数 ---
 def fetch_futures_metrics(exchange: ccxt.Exchange, symbol: str) -> Dict[str, float]:
     """
     MEXCのAPIを使い、最新のFR, OI, L/S Ratioのデータを取得・計算する。
+    ⚠️ 注意: エンドポイントは仮定です。正確なAPIパスは公式ドキュメントで確認が必要です。
     """
+    
     mexc_symbol = symbol.replace('_', '/') 
     
     try:
+        # --- (A) 資金調達率 (FR) の取得 ---
         ticker = exchange.fetch_ticker(mexc_symbol)
         funding_rate = float(ticker.get('fundingRate', 0) or 0)
 
-        # OI履歴データ取得と変化率計算 (仮定のエンドポイント使用)
+        # --- (B) 未決済建玉 (OI) の履歴データ取得と変化率計算 ---
         oi_history_endpoint = f"{MEXC_API_BASE_URL}/api/v1/contract/open_interest/{symbol}"
         oi_params = {'symbol': symbol, 'interval': '60m', 'limit': 5}
+        
         oi_response = requests.get(oi_history_endpoint, params=oi_params, timeout=10)
         oi_response.raise_for_status()
         oi_data = oi_response.json().get('data', [])
@@ -44,10 +49,11 @@ def fetch_futures_metrics(exchange: ccxt.Exchange, symbol: str) -> Dict[str, flo
         if len(oi_data) >= 5:
             current_oi = float(oi_data[-1].get('openInterest', 0))
             prev_oi_4h = float(oi_data[0].get('openInterest', 0)) 
+            
             if prev_oi_4h > 0:
                 oi_change_4h = (current_oi - prev_oi_4h) / prev_oi_4h
         
-        # L/S 比率 (LSR) の取得 (仮定のエンドポイント使用)
+        # --- (C) L/S 比率 (LSR) の取得 ---
         lsr_endpoint = f"{MEXC_API_BASE_URL}/api/v1/contract/long_short_ratio/{symbol}"
         lsr_response = requests.get(lsr_endpoint, params={'symbol': symbol}, timeout=10)
         lsr_response.raise_for_status()
@@ -97,7 +103,7 @@ class FuturesMLBot:
         except Exception as e:
             raise Exception(f"OHLCVデータ取得エラー: {e}")
 
-    # --- (B) 特徴量エンジニアリング (ATRを追加) ---
+    # --- (B) 特徴量エンジニアリング (ATRを含む) ---
     def create_ml_features(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series]:
         """実戦ベースの特徴量を作成する"""
         
@@ -105,7 +111,6 @@ class FuturesMLBot:
         df['RSI'] = ta.rsi(df['Close'], length=14)
         df['MACD_H'] = ta.macd(df['Close'])['MACDh_12_26_9']
         df['Vol_Diff'] = df['Volume'] / ta.sma(df['Volume'], length=20)
-        # 🚨 【改良点】ATRの追加
         df['ATR'] = ta.atr(df['High'], df['Low'], df['Close'], length=14) 
 
         for lag in [1, 2, 3]:
@@ -177,7 +182,7 @@ class FuturesMLBot:
         price = latest_price_data['Close']
         sma = latest_price_data['SMA']
         rsi = latest_price_data['RSI']
-        atr = latest_price_data['ATR'] # 🚨 ATRを使用
+        atr = latest_price_data['ATR']
 
         pred_map = {-1: "📉 下落", 0: "↔️ レンジ", 1: "📈 上昇"}
         ml_result = pred_map.get(ml_prediction, "不明")
@@ -188,15 +193,13 @@ class FuturesMLBot:
         
         current_time = datetime.now(timezone.utc).astimezone(None).strftime('%Y-%m-%d %H:%M JST')
         
-        # 🚨 【改良点1】不確実性スコアの計算
         max_proba = proba[np.argmax(proba)]
         uncertainty_score = 1.0 - max_proba
         
-        # 不確実性に基づいて推奨戦略を調整
         if uncertainty_score > 0.40 and ml_prediction == 0:
-            strategy_advice = "🚨 **高不確実性レンジ相場:** モデルの確信度が低く、ボラティリティも低い（ATR/価格が低い）ため、明確なブレイクアウトシグナルを待つか、取引を回避することを強く推奨します。"
+            strategy_advice = "🚨 **高不確実性レンジ相場:** モデルの確信度が低く、取引回避を推奨します。"
         elif uncertainty_score > 0.40:
-             strategy_advice = "⚠️ **高不確実性トレンド:** モデルの確信度が低いため、推奨方向であっても、ポジションサイズを半分に抑えるか、より短期的なスキャルピングに限定すべきです。"
+             strategy_advice = "⚠️ **高不確実性トレンド:** モデルの確信度が低いため、推奨方向であっても、ポジションサイズを半分に抑えるべきです。"
         else:
              strategy_advice = f"✅ **高確信度トレンド:** モデルの確信度が高く、推奨方向に沿った取引を積極的に検討できます。"
 
@@ -269,18 +272,20 @@ class FuturesMLBot:
 """
         return report_structure, report_conclusion
         
-    # --- (F) Telegram 通知関数 ---
+    # --- (F) Telegram 通知関数 - エラー処理を強化 ---
     def send_telegram_notification(self, message: str):
         """通知の実装"""
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         payload = {'chat_id': TELEGRAM_CHAT_ID, 'text': message, 'parse_mode': 'Markdown'}
         try:
-            requests.post(url, data=payload)
-            print("✅ Telegramへの通知が完了しました。")
+            response = requests.post(url, data=payload)
+            
+            # 🚨 【修正点】レスポンスステータスを確認
+            if response.status_code == 200:
+                print("✅ Telegramへの通知が完了しました。")
+            else:
+                # エラーレスポンスの内容を出力
+                print(f"🚨 Telegram通知エラー (HTTP {response.status_code}): {response.text}")
+                
         except Exception as e:
-            print(f"Telegram通知エラー: {e}")
-
-# --- (app.pyは初回起動通知ロジックを採用した最終版をそのまま使用) ---
-
-# app.py (最終完全版) は省略
-# (app.py内の bot = FuturesMLBot() は上記で改良されたクラスを参照します)
+            print(f"🚨 Telegramリクエスト失敗: {e}")
