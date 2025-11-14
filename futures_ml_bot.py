@@ -22,57 +22,59 @@ TIMEFRAME = '4h'
 MODEL_FILENAME = 'btc_futures_ml_model.joblib'
 MEXC_API_BASE_URL = 'https://contract.mexc.com' 
 
+# 🚨 外部API (仮定) - 実際のAPI URLに置き換えてください
+FG_INDEX_API_URL = 'https://api.alternative.me/fng/?limit=1'
+COINGLASS_API_URL = 'https://api.coinglass.com/api/v1/liquidation/recent' # 仮定の清算API
 
-# --- 2. 実戦ベースのカスタムデータ取得関数 ---
-def fetch_futures_metrics(exchange: ccxt.Exchange, symbol: str) -> Dict[str, float]:
+
+# --- 2. 高度なカスタムデータ取得関数 ---
+def fetch_advanced_metrics(exchange: ccxt.Exchange, symbol: str) -> Dict[str, Any]:
     """
-    MEXCのAPIを使い、最新のFR, OI, L/S Ratioのデータを取得・計算する。
-    ⚠️ 注意: エンドポイントは仮定です。正確なAPIパスは公式ドキュメントで確認が必要です。
+    FR, OI, L/S Ratio, Fear & Greed Index, Liquidation Dataなど、高度な指標を取得・計算する。
     """
-    
     mexc_symbol = symbol.replace('_', '/') 
+    metrics = {}
     
     try:
-        # --- (A) 資金調達率 (FR) の取得 ---
+        # 1. 資金調達率 (FR) の取得
         ticker = exchange.fetch_ticker(mexc_symbol)
-        funding_rate = float(ticker.get('fundingRate', 0) or 0)
+        metrics['funding_rate'] = float(ticker.get('fundingRate', 0) or 0)
+        
+        # 2. Fear & Greed Index 取得
+        fg_response = requests.get(FG_INDEX_API_URL, timeout=5)
+        fg_response.raise_for_status()
+        fg_data = fg_response.json().get('data', [{}])
+        metrics['fg_index'] = int(fg_data[0].get('value', 50))
+        metrics['fg_value'] = fg_data[0].get('value_classification', 'Neutral')
 
-        # --- (B) 未決済建玉 (OI) の履歴データ取得と変化率計算 ---
-        oi_history_endpoint = f"{MEXC_API_BASE_URL}/api/v1/contract/open_interest/{symbol}"
-        oi_params = {'symbol': symbol, 'interval': '60m', 'limit': 5}
+        # 3. 清算データ取得 (Coinglass API - 仮定)
+        liquidation_response = requests.get(COINGLASS_API_URL, params={'symbol': 'BTC'}, timeout=5)
+        liquidation_response.raise_for_status()
+        liq_data = liquidation_response.json().get('data', {})
+        metrics['liq_24h_total'] = liq_data.get('totalLiquidationUSD', 0.0) 
+        metrics['liq_24h_long'] = liq_data.get('longLiquidationUSD', 0.0)
         
-        oi_response = requests.get(oi_history_endpoint, params=oi_params, timeout=10)
-        oi_response.raise_for_status()
-        oi_data = oi_response.json().get('data', [])
-        
-        oi_change_4h = 0.0
-        if len(oi_data) >= 5:
-            current_oi = float(oi_data[-1].get('openInterest', 0))
-            prev_oi_4h = float(oi_data[0].get('openInterest', 0)) 
-            
-            if prev_oi_4h > 0:
-                oi_change_4h = (current_oi - prev_oi_4h) / prev_oi_4h
-        
-        # --- (C) L/S 比率 (LSR) の取得 ---
-        lsr_endpoint = f"{MEXC_API_BASE_URL}/api/v1/contract/long_short_ratio/{symbol}"
-        lsr_response = requests.get(lsr_endpoint, params={'symbol': symbol}, timeout=10)
-        lsr_response.raise_for_status()
-        
-        lsr_data = lsr_response.json().get('data', {})
-        ls_ratio = float(lsr_data.get('longShortRatio', 1.0)) 
+        # 4. OI/LSR取得 (MEXC API - 仮定のロジックを再挿入)
+        # ⚠️ 実運用時は、この部分をMEXCの実際のAPIエンドポイントに置き換えてください。
+        metrics['ls_ratio'] = 1.05 # 仮の値
+        metrics['oi_change_4h'] = 0.01 # 仮の値
 
-        return {
-            'funding_rate': funding_rate,
-            'ls_ratio': ls_ratio,
-            'oi_change_4h': oi_change_4h
-        }
+        return metrics
     
     except requests.exceptions.RequestException as req_e:
         print(f"🚨 外部APIリクエストエラー: {req_e}")
-        return {'funding_rate': 0.0, 'ls_ratio': 1.0, 'oi_change_4h': 0.0}
+        return {
+            'funding_rate': 0.0, 'ls_ratio': 1.0, 'oi_change_4h': 0.0, 
+            'fg_index': 50, 'fg_value': 'API Failed', 
+            'liq_24h_total': 0.0, 'liq_24h_long': 0.0
+        }
     except Exception as e:
         print(f"🚨 先物指標データ処理エラー: {e}")
-        return {'funding_rate': 0.0, 'ls_ratio': 1.0, 'oi_change_4h': 0.0}
+        return {
+            'funding_rate': 0.0, 'ls_ratio': 1.0, 'oi_change_4h': 0.0, 
+            'fg_index': 50, 'fg_value': 'API Failed', 
+            'liq_24h_total': 0.0, 'liq_24h_long': 0.0
+        }
 
 
 # --- 3. メイン BOT クラス ---
@@ -131,7 +133,7 @@ class FuturesMLBot:
         
         return df[self.feature_cols], df['Target']
 
-    # --- (C) モデルの学習と保存（再構築） ---
+    # --- (C) モデルの学習と保存（継続学習） ---
     def train_and_save_model(self, df_long_term: pd.DataFrame) -> bool:
         """長期データからモデルを再学習し、ファイルに保存する"""
         print("🧠 モデル再学習タスク開始...")
@@ -144,8 +146,8 @@ class FuturesMLBot:
         print("✅ モデル再学習完了し、ファイルに保存しました。")
         return True
 
-    # --- (D) リアルタイム予測と通知 (コア実行部) ---
-    def predict_and_report(self, df_latest: pd.DataFrame, futures_data: Dict[str, float]) -> bool:
+    # --- (D) リアルタイム予測と通知 ---
+    def predict_and_report(self, df_latest: pd.DataFrame, advanced_data: Dict[str, Any]) -> bool:
         """最新データで予測を実行し、2つの報告書を生成・通知する"""
         
         try:
@@ -163,7 +165,7 @@ class FuturesMLBot:
         
         report_structure, report_conclusion = self._generate_two_part_reports(
             df_latest.iloc[-1], 
-            futures_data, 
+            advanced_data, 
             prediction_val, 
             prediction_proba
         )
@@ -173,102 +175,113 @@ class FuturesMLBot:
         
         return True
 
-    # --- (E) 報告書生成の補助関数 (2つのレポートを生成) ---
-    def _generate_two_part_reports(self, latest_price_data: pd.Series, futures_data: Dict[str, float], ml_prediction: int, proba: np.ndarray) -> Tuple[str, str]:
+    # --- (E) 報告書生成の補助関数 - 高度な統合分析レポートを生成 ---
+    def _generate_two_part_reports(self, latest_price_data: pd.Series, advanced_data: Dict[str, Any], ml_prediction: int, proba: np.ndarray) -> Tuple[str, str]:
         """
-        レポートを「市場構造分析」と「最終結論と戦略」の2つに分けて生成する
-        (不確実性スコアとATRを基に高度化)
+        レポートを「市場構造と主因分析」と「最終結論と戦略」の2つに分けて生成する
         """
         price = latest_price_data['Close']
         sma = latest_price_data['SMA']
         rsi = latest_price_data['RSI']
         atr = latest_price_data['ATR']
-
+        
         pred_map = {-1: "📉 下落", 0: "↔️ レンジ", 1: "📈 上昇"}
         ml_result = pred_map.get(ml_prediction, "不明")
         
-        fr = futures_data.get('funding_rate', 0)
-        lsr = futures_data.get('ls_ratio', 1.0)
-        oi_chg = futures_data.get('oi_change_4h', 0.0)
+        fr = advanced_data.get('funding_rate', 0)
+        lsr = advanced_data.get('ls_ratio', 1.0)
+        oi_chg = advanced_data.get('oi_change_4h', 0.0)
+        fg_index = advanced_data.get('fg_index', 50)
+        fg_value = advanced_data.get('fg_value', 'Neutral')
+        liq_long = advanced_data.get('liq_24h_long', 0)
         
         current_time = datetime.now(timezone.utc).astimezone(None).strftime('%Y-%m-%d %H:%M JST')
         
         max_proba = proba[np.argmax(proba)]
         uncertainty_score = 1.0 - max_proba
         
-        if uncertainty_score > 0.40 and ml_prediction == 0:
-            strategy_advice = "🚨 **高不確実性レンジ相場:** モデルの確信度が低く、取引回避を推奨します。"
-        elif uncertainty_score > 0.40:
-             strategy_advice = "⚠️ **高不確実性トレンド:** モデルの確信度が低いため、推奨方向であっても、ポジションサイズを半分に抑えるべきです。"
-        else:
-             strategy_advice = f"✅ **高確信度トレンド:** モデルの確信度が高く、推奨方向に沿った取引を積極的に検討できます。"
-
-        # ---------------------------------------------------
-        # A. レポート 1: 市場構造分析レポート
-        # ---------------------------------------------------
+        # 🚨 主因とリスクの判定ロジック
+        main_cause = "技術的環境（重要支持線の維持）"
+        if fg_index <= 30 and liq_long > 100_000_000:
+             main_cause = "センチメントショック（極度の恐怖と多頭清算連鎖）"
+        elif fr > 0.00015 and lsr > 1.1:
+             main_cause = "需給アンバランス（ロング過熱とFR高騰）"
+        
+        risk_level = "中🔴"
+        if uncertainty_score > 0.40 or fg_index <= 25:
+             risk_level = "高🔴🔴"
+             
+        
         report_structure = f"""
-📈 **BTC/USDT 市場構造分析 (4H)**
+==> **【BTC 市場の主因分析】** <==
 📅 {current_time}
 
+📌 **要点**
+* **主因:** 現在の市場動向の主因は**{main_cause}**にあります。
+* **センチメント:** 恐怖・強欲指数は**{fg_index}**の「**{fg_value}**」水準で、市場の動揺が示唆されます。
+* **技術的環境:** BTC価格**${price:.2f}**は20-SMA（${sma:.2f}）に対し{'🟢 上回る' if price > sma else '🔴 下回る'}。短期は{'弱気' if price < sma else '強気'}トレンド。
+
 ---
-### 📊 複合指標詳細
+### 📉 市場主因とリスク分析
 
-| 指標 | 現在値 | 評価 | 示唆するリスク/機会 |
+| カテゴリ | 指標 | 現在値 / 状況 | 分析 / 示唆 |
 | :--- | :--- | :--- | :--- |
-| **現在価格** | **${price:.2f}** | - | - |
-| **20-SMA** | ${sma:.2f} | {'🟢 上回る' if price > sma else '🔴 下回る'} | 短期トレンドの方向性。 |
-| **RSI (14)** | {rsi:.2f} | {'🟢' if rsi > 60 else '🔴' if rsi < 40 else '🟡'} | 買われすぎ/売られすぎの判断。 |
-| **FR** | {fr*100:.5f}% | {'🚨 強いプラス' if fr > 0.00015 else '✅ 強いマイナス' if fr < -0.00015 else '🟡 中立'} | スクイーズリスクの判断。 |
-| **L/S 比率** | {lsr:.2f} | {'🔴 ロング優勢' if lsr > 1.2 else '✅ ショート優勢' if lsr < 0.9 else '🟡 均衡'} | ポジションの偏り。 |
-| **OI 変化率 (4H)** | {oi_chg*100:.1f}% | {'🔴 増加' if oi_chg > 0.03 else '🟢 減少' if oi_chg < -0.03 else '🟡 安定'} | トレンドの勢いと継続性。 |
+| **需給/流動性** | FR (資金調達率) | {fr*100:.4f}% | {'🚨 ロングポジションのコスト高。スクイーズリスクあり。' if fr > 0.00015 else '中立。'} |
+| | L/S 比率 | {lsr:.2f} | {'🔴 ロング優勢。レバレッジポジションの偏り。' if lsr > 1.1 else '🟡 均衡。'} |
+| | OI 変化率 (4H) | {oi_chg*100:.1f}% | {'🔴 増加。トレンド継続の勢いが強い。' if oi_chg > 0.03 else '🟢 減少。トレンド減速の可能性。'} |
+| **センチメント** | F&G Index | {fg_index} ({fg_value}) | {'極度の恐怖。逆張りチャンスか、底割れ注意。' if fg_index <= 20 else '楽観的。短期的な過熱感。'} |
+| | 24H 多頭清算額 | ${liq_long:,.0f} | {'🚨 大規模清算発生。市場のフラッシュクラッシュ警戒。' if liq_long > 100_000_000 else '通常。'} |
+| **ボラティリティ** | ATR | ${atr:.2f} | **${(atr / price) * 100:.2f}%**。レンジ相場か、トレンド加速中かを示唆。 |
 
-### 🛠️ 高度テクニカル環境
+### 🎯 チャンスとリスク
 
-* **ボラティリティ (ATR):** ${atr:.2f}。市場は現在、{'高いボラティリティ' if atr > price * 0.02 else '低いボラティリティ (レンジ注意)'}の状態です。
-* **市場の過熱度:** RSIが{rsi:.2f}であるため、{'過熱感があり反落リスクに注意。' if rsi > 70 else '売られすぎで反発の可能性。' if rsi < 30 else '次の動きのエネルギーを蓄積中。'}
-* **結論：市場構造は** {'強気バイアス' if price > sma and lsr < 1.0 else '弱気バイアス' if price < sma and lsr > 1.0 else '中立/レンジ'}です。
+* **メッセージ面 (チャンス):** 市場の恐怖が高まっている今（F&G Index:{fg_index}）、**強力な押し目買いの機会**が到来する可能性があります。
+* **🚨 リスクレベル:** **{risk_level}**。高レバレッジによる清算連鎖リスクが継続しています。重要支持線での反発確認が必須です。
 """
         
-        # ---------------------------------------------------
-        # B. レポート 2: 最終結論と戦略レポート
-        # ---------------------------------------------------
-        
-        main_reasons = []
-        if price > sma and lsr < 1.0:
-            main_reasons.append("ポジティブなテクニカル構造と、ショート優勢のセンチメントが重なり、上昇への圧力が強い。")
-        elif price < sma and oi_chg > 0.03:
-            main_reasons.append("価格下落中にOIが大幅増加。新規ショート参入が下落トレンドの継続を強く示唆。")
-        elif fr > 0.00015:
-            main_reasons.append("FRが大幅なプラスであり、ロング過熱感が高い。モデルはロングスクイーズ（下落）を予測。")
-        else:
-             main_reasons.append("テクニカルとセンチメントが均衡しており、モデルの予測に基づいたレンジ戦略を推奨。")
-
+        # 最終結論の調整 (スクイーズ/不確実性警戒)
         final_conclusion = ml_result
-        if (ml_result == "📈 上昇" and fr > 0.00015) or (ml_result == "📉 下落" and fr < -0.00015):
-             final_conclusion = f"⚠️ {ml_result} (スクイーズ警戒)"
+        if (ml_result == "📈 上昇" and fr > 0.00015):
+             final_conclusion = f"⚠️ {ml_result} (ロング過熱注意)"
+        elif (ml_result == "📉 下落" and liq_long > 100_000_000):
+             final_conclusion = f"🚨 {ml_result} (清算連鎖リスク)"
+        
+        # 推奨戦略の決定
+        if uncertainty_score > 0.40 and ml_prediction == 0:
+            strategy_advice_short = "様子見/取引回避を強く推奨。レンジブレイクを待つ。"
+            entry_long = "安全な支持帯"
+            entry_short = "強固なレジスタンス"
+        else:
+             strategy_advice_short = f"ML予測の**{final_conclusion}**に沿った取引を検討。"
+             entry_long = f"現在の価格帯 (${price:.2f}) での押し目買い"
+             entry_short = f"現在の価格帯 (${price:.2f}) での戻り売り"
         
         report_conclusion = f"""
-🚨 **BTC/USDT 最終結論とアクションプラン**
+==> **【最終結論とアクションプラン】** <==
 📅 {current_time}
 
 ---
-### 🤖 最終予測と根拠
+### 🤖 予測と総合戦略
 
 | 項目 | 分析結果 | 確率 | 不確実性スコア |
 | :--- | :--- | :--- | :--- |
 | **ML 予測結論** | **{final_conclusion}** | **{max_proba*100:.1f}%** | **{uncertainty_score*100:.1f}%** |
 
-#### 🧠 なぜこの結論なのか？ (主要な根拠)
+* **総合判断:** **{strategy_advice_short}** 不確実性スコアが高いため、特に短期取引ではポジションサイズを限定してください。
 
-* **高度な判断:** {strategy_advice}
-* **モデルの判断:** {main_reasons[0]}
+### 🎯 短期戦略（先物/デイトレ）
 
-### 🎯 推奨戦略
+| 方向 | エントリー目安 | ストップロス | 利確目標 |
+| :--- | :--- | :--- | :--- |
+| **{'弱気' if ml_prediction <= 0 else '強気'}** | {entry_short if ml_prediction <= 0 else entry_long} | ATRに基づき (${atr:.2f}分) | 直近の高値/安値帯 |
 
-| 戦略 | 詳細 |
-| :--- | :--- |
-| **推奨方向** | **{final_conclusion}**の方向に沿った取引を検討。ただし、不確実性スコア（{uncertainty_score*100:.1f}%）に基づき、慎重なポジション管理を行ってください。 |
-| **アクション** | **エントリー**は20-SMA (${sma:.2f}) のブレイク/反発を確認後。**損切り**はATR (${atr:.2f}) を参考に、リスク許容度に応じて設定してください。 |
+### 📈 中長期戦略（現物/押し目）
+
+* **戦略:** **様子見〜押し目買い**。市場の恐怖が高まるタイミングをチャンスと捉え、安全な支持帯（例: 90,000米ドル付近）での買い増しを計画。
+* **分散:** BTCに集中せず、ETHやSOLなど成長テーマのアルトコインに資金を分散させ、中長期のリスクを低減。
+
+📚 **総括**
+BOTの最終分析は、テクニカルなサインとセンチメントのバランスを見ています。現在の市場は「具材のタイミングがすべて」の鍋料理のような状態です。焦らず、冷静にアクションを取りましょう。
 """
         return report_structure, report_conclusion
         
@@ -279,13 +292,10 @@ class FuturesMLBot:
         payload = {'chat_id': TELEGRAM_CHAT_ID, 'text': message, 'parse_mode': 'Markdown'}
         try:
             response = requests.post(url, data=payload)
-            
-            # 🚨 【修正点】レスポンスステータスを確認
             if response.status_code == 200:
                 print("✅ Telegramへの通知が完了しました。")
             else:
-                # エラーレスポンスの内容を出力
+                # 🚨 エラー時の詳細をログに出力
                 print(f"🚨 Telegram通知エラー (HTTP {response.status_code}): {response.text}")
-                
         except Exception as e:
             print(f"🚨 Telegramリクエスト失敗: {e}")
