@@ -7,7 +7,7 @@ from datetime import datetime
 from dotenv import load_dotenv 
 from futures_ml_bot import FuturesMLBot, fetch_futures_metrics, FUTURES_SYMBOL
 
-# ローカルテスト時に .env ファイルを読み込む (Renderでは環境変数が直接使用されます)
+# ローカルテスト時に .env ファイルを読み込む
 load_dotenv() 
 
 # --- 環境変数設定 ---
@@ -77,7 +77,7 @@ def start_scheduler():
         f"再学習間隔: {RETRAIN_INTERVAL_HOURS}時間ごと\n\n"
         "間もなく初回または定時予測タスクが実行されます。"
     )
-    bot.send_telegram_notification(boot_message)
+    bot.send_telegram_notification(boot_message) # 通知ロジックにエラーチェックが含まれます
 
     # ジョブの追加
     scheduler.add_job(func=run_prediction_and_notify, trigger='interval', hours=PREDICTION_INTERVAL_HOURS, id='prediction_job')
