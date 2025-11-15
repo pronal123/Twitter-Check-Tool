@@ -13,7 +13,7 @@ load_dotenv()
 
 # --- 環境変数設定 ---
 WEB_SERVICE_PORT = int(os.environ.get('PORT', 8080))
-RETRAIN_INTERVAL_HOURS = int(os.environ.get('RETRAIN_INTERVAL_HOURS', 24))
+RETRAIN_INTERVAL_MINUTES = int(os.environ.get('RETRAIN_INTERVAL_MINUTES', 1)) # 新しい一時的な設定
 PREDICTION_INTERVAL_HOURS = int(os.environ.get('PREDICTION_INTERVAL_HOURS', 1))
 
 app = Flask(__name__)
