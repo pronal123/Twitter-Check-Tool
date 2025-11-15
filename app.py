@@ -1,4 +1,4 @@
-# app.py (再学習間隔を4時間に修正)
+# app.py (モデル作成後の設定 - 再学習を24時間に戻す)
 
 import os
 from flask import Flask
@@ -12,25 +12,22 @@ load_dotenv()
 
 # --- 環境変数設定 ---
 WEB_SERVICE_PORT = int(os.environ.get('PORT', 8080))
-# 🚨 修正: モデル再学習の間隔を、分から時間に変更し、初期値を4時間に設定
-# 大量のデータ取得とモデル学習は時間がかかるため、安全のため4時間ごとに設定します。
-RETRAIN_INTERVAL_HOURS = int(os.environ.get('RETRAIN_INTERVAL_HOURS', 4))
+RETRAIN_INTERVAL_HOURS = int(os.environ.get('RETRAIN_INTERVAL_HOURS', 24)) # 24時間に戻す
 PREDICTION_INTERVAL_HOURS = int(os.environ.get('PREDICTION_INTERVAL_HOURS', 1))
 
 app = Flask(__name__)
 scheduler = BackgroundScheduler()
 
-# BOTの初期化 (BOTインスタンスはグローバルに保持)
+# 🚨 BOTの初期化 (BOTインスタンスはグローバルに保持)
 bot = None
 try:
-    # 認証情報が不足しているとここでエラーが発生
     bot = FuturesMLBot() 
 except ValueError as e:
     print(f"致命的な初期化エラー: {e}")
     
 # --- 予測実行タスク (定時) ---
 def run_prediction_and_notify():
-    """予測を実行し、Telegramに通知する関数"""
+    # ... (変更なし) ...
     if bot is None:
         print(f"[{datetime.now().strftime('%H:%M:%S')}] 🚨 BOTインスタンスがありません。タスクスキップ。")
         return
@@ -38,7 +35,6 @@ def run_prediction_and_notify():
     try:
         print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚙️ 予測タスク開始...")
         
-        # 高度な分析指標を取得
         advanced_data = fetch_advanced_metrics(bot.exchange, FUTURES_SYMBOL)
         df_latest = bot.fetch_ohlcv_data(limit=100) 
         bot.predict_and_report(df_latest, advanced_data)
@@ -50,7 +46,7 @@ def run_prediction_and_notify():
 
 # --- モデル再学習タスク (定時) ---
 def run_retrain_and_improve():
-    """モデルの再学習と構築を行う関数"""
+    # ... (変更なし) ...
     if bot is None:
         print(f"[{datetime.now().strftime('%H:%M:%S')}] 🚨 BOTインスタンスがありません。再学習スキップ。")
         return
@@ -78,14 +74,14 @@ def start_scheduler():
         "✅ **BOT起動成功とスケジューラ設定完了**\n\n"
         f"サービス名: MEXC分析BOT (高度分析バージョン)\n"
         f"予測間隔: {PREDICTION_INTERVAL_HOURS}時間ごと\n"
-        f"再学習間隔: {RETRAIN_INTERVAL_HOURS}時間ごと (モデル学習の安全性を確保)\n\n"
+        f"再学習間隔: {RETRAIN_INTERVAL_HOURS}時間ごと\n\n"
         "間もなく初回または定時予測タスクが実行されます。"
     )
     bot.send_telegram_notification(boot_message)
 
     # ジョブの追加
     scheduler.add_job(func=run_prediction_and_notify, trigger='interval', hours=PREDICTION_INTERVAL_HOURS, id='prediction_job')
-    # 修正された間隔を使用
+    # 🚨 再学習を時間単位で実行 (通常運用)
     scheduler.add_job(func=run_retrain_and_improve, trigger='interval', hours=RETRAIN_INTERVAL_HOURS, id='retrain_job')
 
     scheduler.start()
