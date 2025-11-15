@@ -88,8 +88,7 @@ def start_scheduler():
     
     # ジョブの追加 (2回目以降の定時実行)
     scheduler.add_job(func=run_prediction_and_notify, trigger='interval', hours=PREDICTION_INTERVAL_HOURS, id='prediction_job')
-    scheduler.add_job(func=run_retrain_and_improve, trigger='interval', hours=RETRAIN_INTERVAL_HOURS, id='retrain_job')
-
+    scheduler.add_job(func=run_retrain_and_improve, trigger='interval', minutes=RETRAIN_INTERVAL_MINUTES, id='retrain_job')
     scheduler.start()
     print(f"✅ スケジューラ起動済み。予測:{PREDICTION_INTERVAL_HOURS}時間ごと, 再学習:{RETRAIN_INTERVAL_HOURS}時間ごと")
     
