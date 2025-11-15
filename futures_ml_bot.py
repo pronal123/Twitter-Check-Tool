@@ -214,7 +214,8 @@ class FuturesMLBot:
             model = joblib.load(MODEL_FILENAME)
         except FileNotFoundError:
             report = "🚨 エラー: モデルファイルが見つかりません。まず学習とコミットを行ってください。"
-            self.send_telegram_notification(report)
+            # HTMLモードでは <, > をエスケープするか、使用しない
+            self.send_telegram_notification(report.replace('<', '&lt;').replace('>', '&gt;')) 
             return False
 
         # 最新のデータの特徴量を作成
@@ -304,8 +305,9 @@ class FuturesMLBot:
              
         
         # --- レポートA: 市場構造と主要ドライバー分析 (HTML形式) ---
+        # 修正: タイトルから「==>」と「<==」を削除し、純粋なHTMLに
         report_structure = f"""
-<b>==> 【BTC 市場ドライバー分析】 <==</b>
+<b>【BTC 市場ドライバー分析】</b>
 📅 {current_time}
 
 📌 <b>主要ポイント</b>
@@ -360,8 +362,9 @@ class FuturesMLBot:
              entry_short = f"現在価格水準（${price:.2f}）での売りの反発"
         
         # --- レポートB: 最終結論と行動計画 (HTML形式) ---
+        # 修正: タイトルから「==>」と「<==」を削除し、純粋なHTMLに
         report_conclusion = f"""
-<b>==> 【最終結論と行動計画】 <==</b>
+<b>【最終結論と行動計画】</b>
 📅 {current_time}
 
 <hr>
@@ -398,7 +401,7 @@ BOTの最終分析は、テクニカルなサインとセンチメントのバ�
     def send_telegram_notification(self, message: str):
         """通知の実装"""
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        # parse_modeをHTMLに変更
+        # parse_modeをHTMLに設定
         payload = {'chat_id': TELEGRAM_CHAT_ID, 'text': message, 'parse_mode': 'HTML'}
         try:
             response = requests.post(url, data=payload)
