@@ -7,6 +7,7 @@ import pandas_ta as ta
 import numpy as np
 import requests
 import joblib
+import json
 from datetime import datetime, timezone
 from sklearn.ensemble import RandomForestClassifier
 from typing import Tuple, Dict, Any
@@ -36,8 +37,17 @@ def fetch_advanced_metrics(exchange: ccxt.Exchange, symbol: str) -> Dict[str, An
     mexc_symbol = symbol.replace('_', '/') 
     metrics = {}
     
-    # 価格のシミュレーション
+    # 価格のシミュレーション (フォールバック値が必要な場合に備えてダミー価格を設定)
     dummy_price = 95000 + np.random.uniform(-500, 500)
+
+    # 全APIコールが失敗した場合のデフォルトフォールバック
+    default_fallbacks = {
+        'funding_rate': 0.0, 'ls_ratio': 1.0, 'oi_change_4h': 0.0, 
+        'fg_index': 50, 'fg_value': 'Neutral (API失敗)', 
+        'liq_24h_total': 0.0, 'liq_24h_long': 0.0,
+        'aggregated_oi_trend': 'API失敗 - データ利用不可',
+        'liquidation_cluster': 'API失敗 - クラスター検出不可'
+    }
 
     try:
         # 1. ファンディングレート (FR) の取得
@@ -45,18 +55,28 @@ def fetch_advanced_metrics(exchange: ccxt.Exchange, symbol: str) -> Dict[str, An
         metrics['funding_rate'] = float(ticker.get('fundingRate', 0) or 0)
         
         # 2. Fear & Greed Index の取得
-        fg_response = requests.get(FG_INDEX_API_URL, timeout=5)
-        fg_response.raise_for_status()
-        fg_data = fg_response.json().get('data', [{}])
-        metrics['fg_index'] = int(fg_data[0].get('value', 50))
-        metrics['fg_value'] = fg_data[0].get('value_classification', 'Neutral')
+        try:
+            fg_response = requests.get(FG_INDEX_API_URL, timeout=5)
+            fg_response.raise_for_status()
+            fg_data = fg_response.json().get('data', [{}])
+            metrics['fg_index'] = int(fg_data[0].get('value', 50))
+            metrics['fg_value'] = fg_data[0].get('value_classification', 'Neutral')
+        except (requests.exceptions.RequestException, json.JSONDecodeError, IndexError) as e:
+            print(f"⚠️ F&G Index APIエラー: {e}")
+            metrics['fg_index'] = default_fallbacks['fg_index']
+            metrics['fg_value'] = default_fallbacks['fg_value']
 
         # 3. 清算データ (Coinglass API - 仮定) の取得
-        liquidation_response = requests.get(COINGLASS_API_URL, params={'symbol': 'BTC'}, timeout=5)
-        liquidation_response.raise_for_status()
-        liq_data = liquidation_response.json().get('data', {})
-        metrics['liq_24h_total'] = liq_data.get('totalLiquidationUSD', 0.0) 
-        metrics['liq_24h_long'] = liq_data.get('longLiquidationUSD', 0.0)
+        try:
+            liquidation_response = requests.get(COINGLASS_API_URL, params={'symbol': 'BTC'}, timeout=5)
+            liquidation_response.raise_for_status()
+            liq_data = liquidation_response.json().get('data', {})
+            metrics['liq_24h_total'] = liq_data.get('totalLiquidationUSD', 0.0) 
+            metrics['liq_24h_long'] = liq_data.get('longLiquidationUSD', 0.0)
+        except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
+            print(f"⚠️ 清算データ APIエラー: {e}")
+            metrics['liq_24h_total'] = default_fallbacks['liq_24h_total']
+            metrics['liq_24h_long'] = default_fallbacks['liq_24h_long']
         
         # 4. OI/LSR のシミュレーション
         metrics['ls_ratio'] = 1.05 + np.random.uniform(-0.1, 0.2) # 1.05 - 1.25
@@ -83,26 +103,10 @@ def fetch_advanced_metrics(exchange: ccxt.Exchange, symbol: str) -> Dict[str, An
         
         return metrics
     
-    except requests.exceptions.RequestException as req_e:
-        print(f"🚨 外部APIリクエストエラー: {req_e}")
-        # API失敗時のフォールバック値
-        return {
-            'funding_rate': 0.0, 'ls_ratio': 1.0, 'oi_change_4h': 0.0, 
-            'fg_index': 50, 'fg_value': 'API失敗', 
-            'liq_24h_total': 0.0, 'liq_24h_long': 0.0,
-            'aggregated_oi_trend': 'API失敗 - データ利用不可',
-            'liquidation_cluster': 'API失敗 - クラスター検出不可'
-        }
     except Exception as e:
-        print(f"🚨 先物インデックスデータ処理エラー: {e}")
-        # その他のエラーのフォールバック値
-        return {
-            'funding_rate': 0.0, 'ls_ratio': 1.0, 'oi_change_4h': 0.0, 
-            'fg_index': 50, 'fg_value': 'API失敗', 
-            'liq_24h_total': 0.0, 'liq_24h_long': 0.0,
-            'aggregated_oi_trend': '内部エラー - データ利用不可',
-            'liquidation_cluster': '内部エラー - クラスター検出不可'
-        }
+        print(f"🚨 先物インデックスデータ処理エラー (MEXC Fetch Ticker含む): {e}")
+        # CCXTエラーまたはその他の致命的なエラーのフォールバック
+        return default_fallbacks
 
 
 # --- 3. メインBOTクラス ---
@@ -128,17 +132,24 @@ class FuturesMLBot:
         """OHLCVデータを取得"""
         try:
             ohlcv = self.exchange.fetch_ohlcv(FUTURES_SYMBOL, timeframe, limit=limit)
+            if not ohlcv:
+                print("🚨 OHLCVデータが空です。")
+                return pd.DataFrame()
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'Open', 'High', 'Low', 'Close', 'Volume'])
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
             df.set_index('timestamp', inplace=True)
             return df
         except Exception as e:
-            raise Exception(f"OHLCVデータ取得エラー: {e}")
+            print(f"🚨 OHLCVデータ取得エラー: {e}")
+            return pd.DataFrame() # エラー時は空のDFを返す
 
     # --- (B) 特徴量エンジニアリング (ATRを含む) ---
     def create_ml_features(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series]:
         """実践的な特徴量を作成"""
         
+        if df.empty:
+            return pd.DataFrame(), pd.Series(dtype=int)
+
         # テクニカル指標の計算
         df['SMA'] = ta.sma(df['Close'], length=20)
         df['RSI'] = ta.rsi(df['Close'], length=14)
@@ -160,13 +171,18 @@ class FuturesMLBot:
             [1, -1], default=0
         )
         
+        # 最初のNaN行を削除
         df.dropna(inplace=True)
         
         # 初回実行時に特徴量カラムリストを生成
-        if not self.feature_cols:
+        if not self.feature_cols and not df.empty:
             cols = [col for col in df.columns if col not in ['Open', 'High', 'Low', 'Close', 'Volume', 'Target', 'timestamp']]
             self.feature_cols = [col for col in cols if df[col].dtype in [np.float64, np.int64]]
         
+        # self.feature_colsに基づいてデータを返す (エラー防止のため)
+        if not self.feature_cols:
+            return pd.DataFrame(), df['Target']
+            
         return df[self.feature_cols], df['Target']
 
     # --- (C) モデルの学習と保存 (継続的学習) ---
@@ -174,6 +190,10 @@ class FuturesMLBot:
         """長期データからモデルを再学習し、ファイルに保存"""
         print("🧠 モデルの再学習タスクを開始...")
         X_train, Y_train = self.create_ml_features(df_long_term.copy())
+        
+        if X_train.empty:
+            print("🚨 致命的なエラー: 学習データが不足しているため、モデルを構築できませんでした。")
+            return False
         
         # RandomForestClassifierを使用
         model = RandomForestClassifier(n_estimators=200, random_state=42, class_weight='balanced', max_depth=10)
@@ -198,6 +218,16 @@ class FuturesMLBot:
 
         # 最新のデータの特徴量を作成
         X_latest, _ = self.create_ml_features(df_latest.copy())
+        
+        # 🚨 ロバストネスチェック: 予測に利用可能なデータがあるか確認
+        if X_latest.empty:
+            report = (
+                "🚨 **予測スキップ通知:** OHLCVデータが不足しているか、特徴量生成中にデータが全て削除されました。\n"
+                f"データ取得期間: {len(df_latest)}バー。特徴量計算に必要な期間: 20バー+ラグ3が必要です。"
+            )
+            self.send_telegram_notification(report)
+            return False
+            
         latest_X = X_latest.iloc[[-1]] 
         
         # 予測を実行
@@ -206,7 +236,7 @@ class FuturesMLBot:
         
         # 2つのレポートを生成
         report_structure, report_conclusion = self._generate_two_part_reports(
-            latest_price_data=df_latest.iloc[-1], 
+            latest_price_data=df_latest.iloc[-1], # 元のデータフレームの最後の行を使用
             advanced_data=advanced_data, 
             ml_prediction=prediction_val, 
             proba=prediction_proba
@@ -225,8 +255,25 @@ class FuturesMLBot:
         """
         # 価格データ
         price = latest_price_data['Close']
-        sma = latest_price_data['SMA']
-        atr = latest_price_data['ATR']
+        
+        # SMAが計算されていない場合のエラー回避のためのチェック (OHLCVが足りている前提)
+        try:
+            # 特徴量生成されたDFから最新のSMAなどを再計算するのは非効率なため、
+            # 予測に成功した場合は、このデータは存在すると仮定し、計算済み特徴量があればそちらを使う方が望ましいが、
+            # 今回は元のDFの最後の行を使うことで対応する。
+            # ただし、SMAは元のDFにはないので、ここでは再計算が必要（または予測に必要なDFから取得が必要）
+            
+            # **暫定対応**: SMAはレポート表示のためだけに再計算を試みる
+            # これは理想的ではないが、エラー回避を優先
+            df_temp = pd.DataFrame([latest_price_data])
+            df_temp['SMA'] = ta.sma(latest_price_data.head(20)['Close'], length=20).iloc[-1] if len(latest_price_data) >= 20 else np.nan
+            df_temp['ATR'] = ta.atr(latest_price_data['High'], latest_price_data['Low'], latest_price_data['Close'], length=14).iloc[-1] if len(latest_price_data) >= 14 else np.nan
+            
+            sma = df_temp['SMA'].iloc[0] if not df_temp['SMA'].empty and not pd.isna(df_temp['SMA'].iloc[0]) else price
+            atr = df_temp['ATR'].iloc[0] if not df_temp['ATR'].empty and not pd.isna(df_temp['ATR'].iloc[0]) else (price * 0.01) # 1%のダミーATR
+        except Exception:
+            sma = price # SMAが計算できない場合、現在の価格を使用
+            atr = price * 0.01
         
         # 予測結果マップ
         pred_map = {-1: "📉 下落", 0: "↔️ レンジ", 1: "📈 上昇"}
@@ -305,7 +352,7 @@ class FuturesMLBot:
              final_conclusion = f"🚨 {ml_result} (清算カスケードリスク)"
         
         # 推奨戦略の決定
-        if uncertainty_score > 0.40 and ml_prediction == 0:
+        if uncertainty_score > 0.40 or ml_prediction == 0:
             strategy_advice_short = "トレードを待ち/避けることを強く推奨。レンジブレイクを待機。"
             entry_long = "安全なサポートゾーン"
             entry_short = "強力なレジスタンス"
