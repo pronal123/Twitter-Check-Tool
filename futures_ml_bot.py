@@ -71,6 +71,7 @@ def fetch_advanced_metrics(exchange: ccxt.Exchange, symbol: str) -> Dict[str, An
             liquidation_response = requests.get(COINGLASS_API_URL, params={'symbol': 'BTC'}, timeout=5)
             liquidation_response.raise_for_status()
             liq_data = liquidation_response.json().get('data', {})
+            # ここでJSONDecodeErrorが発生している可能性が高い。
             metrics['liq_24h_total'] = liq_data.get('totalLiquidationUSD', 0.0) 
             metrics['liq_24h_long'] = liq_data.get('longLiquidationUSD', 0.0)
         except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
@@ -256,21 +257,15 @@ class FuturesMLBot:
         # 価格データ
         price = latest_price_data['Close']
         
-        # SMAが計算されていない場合のエラー回避のためのチェック (OHLCVが足りている前提)
+        # SMA/ATRの計算
         try:
-            # 特徴量生成されたDFから最新のSMAなどを再計算するのは非効率なため、
-            # 予測に成功した場合は、このデータは存在すると仮定し、計算済み特徴量があればそちらを使う方が望ましいが、
-            # 今回は元のDFの最後の行を使うことで対応する。
-            # ただし、SMAは元のDFにはないので、ここでは再計算が必要（または予測に必要なDFから取得が必要）
-            
-            # **暫定対応**: SMAはレポート表示のためだけに再計算を試みる
-            # これは理想的ではないが、エラー回避を優先
-            df_temp = pd.DataFrame([latest_price_data])
-            df_temp['SMA'] = ta.sma(latest_price_data.head(20)['Close'], length=20).iloc[-1] if len(latest_price_data) >= 20 else np.nan
-            df_temp['ATR'] = ta.atr(latest_price_data['High'], latest_price_data['Low'], latest_price_data['Close'], length=14).iloc[-1] if len(latest_price_data) >= 14 else np.nan
-            
-            sma = df_temp['SMA'].iloc[0] if not df_temp['SMA'].empty and not pd.isna(df_temp['SMA'].iloc[0]) else price
-            atr = df_temp['ATR'].iloc[0] if not df_temp['ATR'].empty and not pd.isna(df_temp['ATR'].iloc[0]) else (price * 0.01) # 1%のダミーATR
+            # 最新のデータを含むシリーズから計算するため、十分な期間があるかチェック
+            df_temp = latest_price_data.to_frame().T.copy()
+            df_temp['SMA'] = ta.sma(df_temp['Close'], length=20).iloc[-1]
+            df_temp['ATR'] = ta.atr(df_temp['High'], df_temp['Low'], df_temp['Close'], length=14).iloc[-1]
+
+            sma = df_temp['SMA'].iloc[0] if not pd.isna(df_temp['SMA'].iloc[0]) else price
+            atr = df_temp['ATR'].iloc[0] if not pd.isna(df_temp['ATR'].iloc[0]) else (price * 0.01)
         except Exception:
             sma = price # SMAが計算できない場合、現在の価格を使用
             atr = price * 0.01
@@ -308,40 +303,40 @@ class FuturesMLBot:
              risk_level = "高🔴🔴"
              
         
-        # --- レポートA: 市場構造と主要ドライバー分析 ---
+        # --- レポートA: 市場構造と主要ドライバー分析 (Markdownテーブルを整形) ---
         report_structure = f"""
 ==> **【BTC 市場ドライバー分析】** <==
 📅 {current_time}
 
 📌 **主要ポイント**
-* **主要ドライバー:** 現在の市場トレンドの主要なドライバーは **{main_cause}** です。
-* **センチメント:** Fear & Greed Indexは **{fg_index}**（「**{fg_value}**」レベル）であり、市場のボラティリティを示唆しています。
-* **テクニカル環境:** BTC価格 **${price:.2f}** は、20日SMA（${sma:.2f}）を {'🟢 上回っています' if price > sma else '🔴 下回っています'}。短期トレンドは {'強気' if price > sma else '弱気'} です。
+* *主要ドライバー:* 現在の市場トレンドの主要なドライバーは **{main_cause}** です。
+* *センチメント:* Fear & Greed Indexは **{fg_index}**（「**{fg_value}**」レベル）であり、市場のボラティリティを示唆しています。
+* *テクニカル環境:* BTC価格 **${price:.2f}** は、20日SMA（${sma:.2f}）を {'🟢 上回っています' if price > sma else '🔴 下回っています'}。短期トレンドは {'強気' if price > sma else '弱気'} です。
 
 ---
 ### 📉 市場ドライバーとリスク分析
 
 | カテゴリ | 指標 | 現在値 / ステータス | 分析 / 示唆 |
-| :--- | :--- | :--- | :--- |
-| **需給・流動性** | FR (ファンディングレート) | {fr*100:.4f}% | {'🚨 ロングポジションのコストが高い。スクイーズリスクあり。' if fr > 0.00015 else '中立。'} |
-| | L/S比率 | {lsr:.2f} | {'🔴 ロング優勢。レバレッジポジションの不均衡。' if lsr > 1.1 else '🟡 バランス。'} |
-| | OI変化率 (4H) | {oi_chg*100:.1f}% | {'🔴 増加中。トレンド継続に強い勢い。' if oi_chg > 0.03 else '🟢 減少中。トレンド減速の可能性。'} |
-| **センチメント** | F&G指数 | {fg_index} ({fg_value}) | {'極度の恐怖。逆張り機会か、底値割れの警告。' if fg_index <= 20 else '楽観的。短期的な過熱の可能性。'} |
-| | 24Hロング清算額 | ${liq_long:,.0f} | {'🚨 大規模な清算が発生。フラッシュクラッシュに注意。' if liq_long > 100_000_000 else '通常。'} |
-| **ボラティリティ** | ATR | ${atr:.2f} | **{(atr / price) * 100:.2f}%**。レンジ相場か、トレンドの加速を示唆。 |
+|:---|:---|:---|:---|
+| **需給・流動性** | FR | {fr*100:.4f}% | {'🚨 ロングのコスト高。スクイーズリスクあり。' if fr > 0.00015 else '中立。'} |
+| | L/S比率 | {lsr:.2f} | {'🔴 ロング優勢。レバレッジの不均衡。' if lsr > 1.1 else '🟡 バランス。'} |
+| | OI変化率 (4H)| {oi_chg*100:.1f}% | {'🔴 増加中。トレンド継続の勢い。' if oi_chg > 0.03 else '🟢 減少中。トレンド減速の可能性。'} |
+| **センチメント** | F&G指数| {fg_index} ({fg_value}) | {'極度の恐怖。逆張り機会か、底値割れの警告。' if fg_index <= 20 else '楽観的。短期的な過熱の可能性。'} |
+| | 24Hロング清算額| ${liq_long:,.0f} | {'🚨 大規模清算発生。フラッシュクラッシュに注意。' if liq_long > 100_000_000 else '通常。'} |
+| **ボラティリティ** | ATR | ${atr:.2f} | **{(atr / price) * 100:.2f}%**。 |
 
 ---
 ### 📊 MEXCダッシュボード洞察 (マクロデータ / ヒートマップ)
 
 | 項目 | 洞察 | 示唆 |
-| :--- | :--- | :--- |
-| **総建玉トレンド** | {oi_trend} | マクロデータに基づき、市場への資金流入/流出の勢いを評価。 |
-| **清算ヒートマップ** | {liq_cluster_info} | 短期的な価格の**マグネット**として機能する可能性のある清算クラスターを特定。 |
+|:---|:---|:---|
+| **総建玉トレンド** | {oi_trend} | 市場への資金流入/流出の勢いを評価。 |
+| **清算ヒートマップ** | {liq_cluster_info} | 短期的な価格の**マグネット**として機能するクラスターを特定。 |
 
 ### 🎯 機会とリスク
 
 * **機会:** 市場の恐怖が上昇している場合（F&G指数: {fg_index}）、**強い押し目買いの機会**が生まれる可能性があります。
-* **🚨 リスクレベル:** **{risk_level}**。高いレバレッジによる清算カスケードのリスクが継続。主要サポートでの反発確認が必須です。
+* **🚨 リスクレベル:** **{risk_level}**。高レバレッジによる清算カスケードのリスク継続。主要サポートでの反発確認が必須です。
 """
         
         # --- 予測結果の調整 ---
@@ -361,7 +356,7 @@ class FuturesMLBot:
              entry_long = f"現在価格水準（${price:.2f}）での押し目買い"
              entry_short = f"現在価格水準（${price:.2f}）での売りの反発"
         
-        # --- レポートB: 最終結論と行動計画 ---
+        # --- レポートB: 最終結論と行動計画 (Markdownテーブルを整形) ---
         report_conclusion = f"""
 ==> **【最終結論と行動計画】** <==
 📅 {current_time}
@@ -370,7 +365,7 @@ class FuturesMLBot:
 ### 🤖 予測と全体戦略
 
 | 項目 | 分析結果 | 確率 | 不確実性スコア |
-| :--- | :--- | :--- | :--- |
+|:---|:---|:---|:---|
 | **ML予測結論** | **{final_conclusion}** | **{max_proba*100:.1f}%** | **{uncertainty_score*100:.1f}%** |
 
 * **全体判断:** **{strategy_advice_short}**。高い不確実性スコアのため、特に短期取引ではポジションサイズを制限してください。
@@ -378,12 +373,12 @@ class FuturesMLBot:
 ### 🎯 短期戦略（先物/デイトレード）
 
 | 方向性 | エントリー目標 | 損切り（ストップロス） | 利益確定目標 |
-| :--- | :--- | :--- | :--- |
+|:---|:---|:---|:---|
 | **{'弱気' if ml_prediction <= 0 else '強気'}** | {entry_short if ml_prediction <= 0 else entry_long} | ATRに基づいた金額（${atr:.2f}） | 直近の高値/安値ゾーン |
 
 ### 📈 中長期戦略（現物/押し目）
 
-* **戦略:** **待ちと押し目買い**。市場の恐怖を、安全なサポートゾーン（例：約$90,000 USD）で買いを入れる計画を立てる機会と捉えます。
+* **戦略:** *待ちと押し目買い*。市場の恐怖を、安全なサポートゾーン（例：約 $90,000 USD）で買いを入れる計画を立てる機会と捉えます。
 * **分散:** BTCだけに集中せず、中長期的なリスクを軽減するために成長テーマを持つアルトコイン（ETH、SOLなど）にも資金を分散してください。
 
 📚 **まとめ**
@@ -395,12 +390,16 @@ BOTの最終分析は、テクニカルなサインとセンチメントのバ�
     def send_telegram_notification(self, message: str):
         """通知の実装"""
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        # parse_mode='Markdown' を使用するため、特殊文字のエラーが起こりやすい。
+        # 今回は、Markdownテーブルのパイプ文字の前後のスペースを削除し、
+        # 構造の崩れを防ぐために修正を行いました。
         payload = {'chat_id': TELEGRAM_CHAT_ID, 'text': message, 'parse_mode': 'Markdown'}
         try:
             response = requests.post(url, data=payload)
             if response.status_code == 200:
                 print("✅ Telegram通知が完了しました。")
             else:
+                # ユーザーにエラー内容を伝える
                 print(f"🚨 Telegram通知エラー (HTTP {response.status_code}): {response.text}")
         except Exception as e:
             print(f"🚨 Telegramリクエストに失敗しました: {e}")
