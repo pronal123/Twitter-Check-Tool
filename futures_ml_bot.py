@@ -12,7 +12,7 @@ from sklearn.ensemble import RandomForestClassifier
 from typing import Tuple, Dict, Any
 
 # --- 1. 環境変数設定 ---
-# これらの変数はデプロイ環境で設定する必要があります
+# These variables must be set in the deployment environment
 MEXC_API_KEY = os.environ.get('MEXC_API_KEY')
 MEXC_SECRET = os.environ.get('MEXC_SECRET')
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
@@ -23,48 +23,47 @@ TIMEFRAME = '4h'
 MODEL_FILENAME = 'btc_futures_ml_model.joblib'
 MEXC_API_BASE_URL = 'https://contract.mexc.com' 
 
-# 外部API (仮定) - 実際のAPI URLに置き換えてください
+# External API (Assumed) - Replace with actual API URLs
 FG_INDEX_API_URL = 'https://api.alternative.me/fng/?limit=1'
-COINGLASS_API_URL = 'https://api.coinglass.com/api/v1/liquidation/recent' # 仮定の清算API
+COINGLASS_API_URL = 'https://api.coinglass.com/api/v1/liquidation/recent' # Assumed liquidation API
 
 
-# --- 2. 高度なカスタムデータ取得関数 ---
+# --- 2. Advanced Custom Data Fetching Function ---
 def fetch_advanced_metrics(exchange: ccxt.Exchange, symbol: str) -> Dict[str, Any]:
     """
-    FR, OI, L/S Ratio, Fear & Greed Index, Liquidation Data、
-    そしてMEXCダッシュボードからの洞察（シミュレーション）を取得・計算する。
+    Fetches/calculates FR, OI, L/S Ratio, Fear & Greed Index, Liquidation Data,
+    and simulated insights from the MEXC Dashboard.
     """
     mexc_symbol = symbol.replace('_', '/') 
     metrics = {}
     
-    # 最新価格をダミーで取得（シミュレーション用）
+    # Simulate latest price (for simulation purposes)
     dummy_price = 95000 + np.random.uniform(-500, 500)
 
     try:
-        # 1. 資金調達率 (FR) の取得
+        # 1. Fetch Funding Rate (FR)
         ticker = exchange.fetch_ticker(mexc_symbol)
         metrics['funding_rate'] = float(ticker.get('fundingRate', 0) or 0)
         
-        # 2. Fear & Greed Index 取得
+        # 2. Fetch Fear & Greed Index
         fg_response = requests.get(FG_INDEX_API_URL, timeout=5)
         fg_response.raise_for_status()
         fg_data = fg_response.json().get('data', [{}])
         metrics['fg_index'] = int(fg_data[0].get('value', 50))
         metrics['fg_value'] = fg_data[0].get('value_classification', 'Neutral')
 
-        # 3. 清算データ取得 (Coinglass API - 仮定)
+        # 3. Fetch Liquidation Data (Coinglass API - Assumed)
         liquidation_response = requests.get(COINGLASS_API_URL, params={'symbol': 'BTC'}, timeout=5)
         liquidation_response.raise_for_status()
         liq_data = liquidation_response.json().get('data', {})
         metrics['liq_24h_total'] = liq_data.get('totalLiquidationUSD', 0.0) 
         metrics['liq_24h_long'] = liq_data.get('longLiquidationUSD', 0.0)
         
-        # 4. OI/LSR取得 (MEXC API - 仮定のロジックを再挿入)
+        # 4. Simulate OI/LSR (Simulated logic re-inserted)
         metrics['ls_ratio'] = 1.05 + np.random.uniform(-0.1, 0.2) # 1.05 - 1.25
         metrics['oi_change_4h'] = 0.01 + np.random.uniform(-0.02, 0.01) # -0.01 - 0.02
         
         # --- 5. MEXC Macro Data & Heatmap Insight Simulation ---
-        # ユーザーが指定したMEXCのダッシュボードからの洞察を組み込むためのシミュレーション
         
         # Macro Data Simulation (Aggregated OI Trend)
         metrics['aggregated_oi_trend'] = np.random.choice([
@@ -75,7 +74,7 @@ def fetch_advanced_metrics(exchange: ccxt.Exchange, symbol: str) -> Dict[str, An
         ])
 
         # Heat Map Simulation (Liquidation Cluster Insight)
-        # 価格に基づいて清算クラスタリングをシミュレート
+        # Simulate liquidation clustering based on price
         cluster_price_short = int(dummy_price * (1 - np.random.uniform(0.01, 0.03)))
         cluster_price_long = int(dummy_price * (1 + np.random.uniform(0.01, 0.03)))
         metrics['liquidation_cluster'] = np.random.choice([
@@ -87,8 +86,8 @@ def fetch_advanced_metrics(exchange: ccxt.Exchange, symbol: str) -> Dict[str, An
         return metrics
     
     except requests.exceptions.RequestException as req_e:
-        print(f"🚨 外部APIリクエストエラー: {req_e}")
-        # APIが失敗した場合のフォールバック値
+        print(f"🚨 External API Request Error: {req_e}")
+        # Fallback values if API fails
         return {
             'funding_rate': 0.0, 'ls_ratio': 1.0, 'oi_change_4h': 0.0, 
             'fg_index': 50, 'fg_value': 'API Failed', 
@@ -97,8 +96,8 @@ def fetch_advanced_metrics(exchange: ccxt.Exchange, symbol: str) -> Dict[str, An
             'liquidation_cluster': 'API Failed - No Cluster Detected'
         }
     except Exception as e:
-        print(f"🚨 先物指標データ処理エラー: {e}")
-        # その他のエラーのフォールバック値
+        print(f"🚨 Futures Index Data Processing Error: {e}")
+        # Fallback values for other errors
         return {
             'funding_rate': 0.0, 'ls_ratio': 1.0, 'oi_change_4h': 0.0, 
             'fg_index': 50, 'fg_value': 'API Failed', 
@@ -108,27 +107,27 @@ def fetch_advanced_metrics(exchange: ccxt.Exchange, symbol: str) -> Dict[str, An
         }
 
 
-# --- 3. メイン BOT クラス ---
+# --- 3. Main BOT Class ---
 class FuturesMLBot:
     def __init__(self):
         if not all([MEXC_API_KEY, MEXC_SECRET]):
-             raise ValueError("APIキーが設定されていません。環境変数を確認してください。")
+             raise ValueError("API key not set. Please check environment variables.")
              
-        # CCXT MEXCフューチャーズクライアントの初期化
+        # Initialize CCXT MEXC Futures Client
         self.exchange = ccxt.mexc({
             'apiKey': MEXC_API_KEY,
             'secret': MEXC_SECRET,
             'options': {'defaultType': 'future'},
             'enableRateLimit': True,
         })
-        # 予測のターゲットとなる変動率の閾値
+        # Target volatility threshold for prediction
         self.target_threshold = 0.0005 
         self.prediction_period = 1 
         self.feature_cols = [] 
 
-    # --- (A) データ取得 (OHLCV) ---
+    # --- (A) Data Fetching (OHLCV) ---
     def fetch_ohlcv_data(self, limit: int = 100, timeframe: str = TIMEFRAME) -> pd.DataFrame:
-        """OHLCVデータを取得する"""
+        """Fetches OHLCV data"""
         try:
             ohlcv = self.exchange.fetch_ohlcv(FUTURES_SYMBOL, timeframe, limit=limit)
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'Open', 'High', 'Low', 'Close', 'Volume'])
@@ -136,28 +135,28 @@ class FuturesMLBot:
             df.set_index('timestamp', inplace=True)
             return df
         except Exception as e:
-            raise Exception(f"OHLCVデータ取得エラー: {e}")
+            raise Exception(f"OHLCV data fetching error: {e}")
 
-    # --- (B) 特徴量エンジニアリング (ATRを含む) ---
+    # --- (B) Feature Engineering (including ATR) ---
     def create_ml_features(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series]:
-        """実戦ベースの特徴量を作成する"""
+        """Creates practical features"""
         
-        # テクニカル指標の計算
+        # Calculate Technical Indicators
         df['SMA'] = ta.sma(df['Close'], length=20)
         df['RSI'] = ta.rsi(df['Close'], length=14)
         df['MACD_H'] = ta.macd(df['Close'])['MACDh_12_26_9']
         df['Vol_Diff'] = df['Volume'] / ta.sma(df['Volume'], length=20)
         df['ATR'] = ta.atr(df['High'], df['Low'], df['Close'], length=14) 
 
-        # ラグ特徴量の追加 (過去の値を特徴量とする)
+        # Add Lag Features (previous values as features)
         for lag in [1, 2, 3]:
             df[f'RSI_L{lag}'] = df['RSI'].shift(lag)
             df[f'Price_L{lag}'] = df['Close'].pct_change(lag).shift(lag)
             
-        # ターゲット変数の作成 (次期間の終値の変動率)
+        # Create Target Variable (next period's closing price change rate)
         future_change = df['Close'].pct_change(periods=-self.prediction_period).shift(self.prediction_period)
         
-        # ターゲット変数 ('Target') を [-1 (下落), 0 (レンジ), 1 (上昇)] に分類
+        # Classify Target Variable ('Target') into [-1 (Down), 0 (Range), 1 (Up)]
         df['Target'] = np.select(
             [future_change > self.target_threshold, future_change < -self.target_threshold],
             [1, -1], default=0
@@ -165,77 +164,77 @@ class FuturesMLBot:
         
         df.dropna(inplace=True)
         
-        # 特徴量列リストの初回生成
+        # Generate feature column list on first run
         if not self.feature_cols:
             cols = [col for col in df.columns if col not in ['Open', 'High', 'Low', 'Close', 'Volume', 'Target', 'timestamp']]
             self.feature_cols = [col for col in cols if df[col].dtype in [np.float64, np.int64]]
         
         return df[self.feature_cols], df['Target']
 
-    # --- (C) モデルの学習と保存（継続学習） ---
+    # --- (C) Model Training and Saving (Continuous Learning) ---
     def train_and_save_model(self, df_long_term: pd.DataFrame) -> bool:
-        """長期データからモデルを再学習し、ファイルに保存する"""
-        print("🧠 モデル再学習タスク開始...")
+        """Retrains the model from long-term data and saves it to a file"""
+        print("🧠 Model Retraining Task Started...")
         X_train, Y_train = self.create_ml_features(df_long_term.copy())
         
-        # ランダムフォレスト分類器を使用
+        # Use RandomForestClassifier
         model = RandomForestClassifier(n_estimators=200, random_state=42, class_weight='balanced', max_depth=10)
         model.fit(X_train, Y_train)
         
-        # モデルをファイルに保存
+        # Save the model to a file
         joblib.dump(model, MODEL_FILENAME)
-        print("✅ モデル再学習完了し、ファイルに保存しました。")
+        print("✅ Model Retraining Completed and Saved to File.")
         return True
 
-    # --- (D) リアルタイム予測と通知 ---
+    # --- (D) Real-time Prediction and Notification ---
     def predict_and_report(self, df_latest: pd.DataFrame, advanced_data: Dict[str, Any]) -> bool:
-        """最新データで予測を実行し、2つの報告書を生成・通知する"""
+        """Executes prediction on latest data and generates/notifies two reports"""
         
         try:
-            # モデルをファイルから読み込み
+            # Load the model from the file
             model = joblib.load(MODEL_FILENAME)
         except FileNotFoundError:
-            report = "🚨 エラー: モデルファイルが見つかりません。最初に学習とコミットを行ってください。"
+            report = "🚨 Error: Model file not found. Please train and commit first."
             self.send_telegram_notification(report)
             return False
 
-        # 最新データの特徴量を作成
+        # Create features for the latest data
         X_latest, _ = self.create_ml_features(df_latest.copy())
         latest_X = X_latest.iloc[[-1]] 
         
-        # 予測の実行
+        # Execute prediction
         prediction_val = model.predict(latest_X)[0]
         prediction_proba = model.predict_proba(latest_X)[0]
         
-        # 2つのレポートを生成
+        # Generate two reports
         report_structure, report_conclusion = self._generate_two_part_reports(
-            df_latest.iloc[-1], 
-            advanced_data, 
-            prediction_val, 
-            prediction_proba
+            latest_price_data=df_latest.iloc[-1], 
+            advanced_data=advanced_data, 
+            ml_prediction=prediction_val, 
+            proba=prediction_proba
         )
         
-        # Telegramに送信
+        # Send to Telegram
         self.send_telegram_notification(report_structure)
         self.send_telegram_notification(report_conclusion)
         
         return True
 
-    # --- (E) 報告書生成の補助関数 - 高度な統合分析レポートを生成 ---
+    # --- (E) Report Generation Helper Function - Generates Advanced Integrated Analysis Report ---
     def _generate_two_part_reports(self, latest_price_data: pd.Series, advanced_data: Dict[str, Any], ml_prediction: int, proba: np.ndarray) -> Tuple[str, str]:
         """
-        レポートを「市場構造と主因分析」と「最終結論と戦略」の2つに分けて生成する
+        Generates reports in two parts: "Market Structure and Main Drivers Analysis" and "Final Conclusion and Strategy"
         """
-        # 価格データ
+        # Price Data
         price = latest_price_data['Close']
         sma = latest_price_data['SMA']
         atr = latest_price_data['ATR']
         
-        # 予測結果のマップ
-        pred_map = {-1: "📉 下落", 0: "↔️ レンジ", 1: "📈 上昇"}
-        ml_result = pred_map.get(ml_prediction, "不明")
+        # Prediction Result Map
+        pred_map = {-1: "📉 Down", 0: "↔️ Range", 1: "📈 Up"}
+        ml_result = pred_map.get(ml_prediction, "Unknown")
         
-        # 高度な指標
+        # Advanced Indicators
         fr = advanced_data.get('funding_rate', 0)
         lsr = advanced_data.get('ls_ratio', 1.0)
         oi_chg = advanced_data.get('oi_change_4h', 0.0)
@@ -243,120 +242,120 @@ class FuturesMLBot:
         fg_value = advanced_data.get('fg_value', 'Neutral')
         liq_long = advanced_data.get('liq_24h_long', 0)
         
-        # MEXC ダッシュボード洞察
-        oi_trend = advanced_data.get('aggregated_oi_trend', 'データ取得失敗')
-        liq_cluster_info = advanced_data.get('liquidation_cluster', 'クラスタ検出なし')
+        # MEXC Dashboard Insights
+        oi_trend = advanced_data.get('aggregated_oi_trend', 'Data Fetch Failed')
+        liq_cluster_info = advanced_data.get('liquidation_cluster', 'No Cluster Detected')
         
         current_time = datetime.now(timezone.utc).astimezone(None).strftime('%Y-%m-%d %H:%M JST')
         
         max_proba = proba[np.argmax(proba)]
         uncertainty_score = 1.0 - max_proba
         
-        # 主因とリスクの判定ロジック (簡略化)
-        main_cause = "技術的環境（重要支持線の維持）"
+        # Logic for determining Main Driver and Risk (Simplified)
+        main_cause = "Technical Environment (Maintaining Key Support)"
         if fg_index <= 30 and liq_long > 100_000_000:
-             main_cause = "センチメントショック（極度の恐怖と多頭清算連鎖）"
+             main_cause = "Sentiment Shock (Extreme Fear and Long Liquidation Cascade)"
         elif fr > 0.00015 and lsr > 1.1:
-             main_cause = "需給アンバランス（ロング過熱とFR高騰）"
+             main_cause = "Supply/Demand Imbalance (Long Overheating and High FR)"
         
-        risk_level = "中🔴"
+        risk_level = "Medium🔴"
         if uncertainty_score > 0.40 or fg_index <= 25:
-             risk_level = "高🔴🔴"
+             risk_level = "High🔴🔴"
              
         
-        # --- レポート A: 市場構造と主因分析 ---
+        # --- Report A: Market Structure and Main Drivers Analysis ---
         report_structure = f"""
-==> **【BTC 市場の主因分析】** <==
+==> **【BTC Market Driver Analysis】** <==
 📅 {current_time}
 
-📌 **要点**
-* **主因:** 現在の市場動向の主因は**{main_cause}**にあります。
-* **センチメント:** 恐怖・強欲指数は**{fg_index}**の「**{fg_value}**」水準で、市場の動揺が示唆されます。
-* **技術的環境:** BTC価格**${price:.2f}**は20-SMA（${sma:.2f}）に対し{'🟢 上回る' if price > sma else '🔴 下回る'}。短期は{'弱気' if price < sma else '強気'}トレンド。
+📌 **Key Points**
+* **Main Driver:** The primary driver of the current market trend is **{main_cause}**.
+* **Sentiment:** The Fear & Greed Index is at **{fg_index}** ("**{fg_value}**" level), suggesting market volatility.
+* **Technical Environment:** BTC price **${price:.2f}** is {'🟢 Above' if price > sma else '🔴 Below'} the 20-SMA (${sma:.2f}). Short-term trend is {'bullish' if price > sma else 'bearish'}.
 
 ---
-### 📉 市場主因とリスク分析
+### 📉 Market Drivers and Risk Analysis
 
-| カテゴリ | 指標 | 現在値 / 状況 | 分析 / 示唆 |
+| Category | Indicator | Current Value / Status | Analysis / Implication |
 | :--- | :--- | :--- | :--- |
-| **需給/流動性** | FR (資金調達率) | {fr*100:.4f}% | {'🚨 ロングポジションのコスト高。スクイーズリスクあり。' if fr > 0.00015 else '中立。'} |
-| | L/S 比率 | {lsr:.2f} | {'🔴 ロング優勢。レバレッジポジションの偏り。' if lsr > 1.1 else '🟡 均衡。'} |
-| | OI 変化率 (4H) | {oi_chg*100:.1f}% | {'🔴 増加。トレンド継続の勢いが強い。' if oi_chg > 0.03 else '🟢 減少。トレンド減速の可能性。'} |
-| **センチメント** | F&G Index | {fg_index} ({fg_value}) | {'極度の恐怖。逆張りチャンスか、底割れ注意。' if fg_index <= 20 else '楽観的。短期的な過熱感。'} |
-| | 24H 多頭清算額 | ${liq_long:,.0f} | {'🚨 大規模清算発生。市場のフラッシュクラッシュ警戒。' if liq_long > 100_000_000 else '通常。'} |
-| **ボラティリティ** | ATR | ${atr:.2f} | **${(atr / price) * 100:.2f}%**。レンジ相場か、トレンド加速中かを示唆。 |
+| **S/D & Liquidity** | FR (Funding Rate) | {fr*100:.4f}% | {'🚨 High cost for long positions. Squeeze risk present.' if fr > 0.00015 else 'Neutral.'} |
+| | L/S Ratio | {lsr:.2f} | {'🔴 Long dominance. Imbalance in leveraged positions.' if lsr > 1.1 else '🟡 Balanced.'} |
+| | OI Change (4H) | {oi_chg*100:.1f}% | {'🔴 Increasing. Strong momentum for trend continuation.' if oi_chg > 0.03 else '🟢 Decreasing. Potential trend slowdown.'} |
+| **Sentiment** | F&G Index | {fg_index} ({fg_value}) | {'Extreme Fear. Counter-trend opportunity or warning of a bottom break.' if fg_index <= 20 else 'Optimistic. Short-term overheating possible.'} |
+| | 24H Long Liq. | ${liq_long:,.0f} | {'🚨 Large liquidations occurred. Caution for flash crashes.' if liq_long > 100_000_000 else 'Normal.'} |
+| **Volatility** | ATR | ${atr:.2f} | **{(atr / price) * 100:.2f}%**. Suggests range-bound or accelerating trend. |
 
 ---
-### 📊 MEXC ダッシュボード洞察 (Macro Data / Heatmap)
+### 📊 MEXC Dashboard Insights (Macro Data / Heatmap)
 
-| 項目 | 洞察 | 示唆 |
+| Item | Insight | Implication |
 | :--- | :--- | :--- |
-| **集計OIトレンド** | {oi_trend} | マクロデータに基づき、市場への資金流入/流出の勢いを判断。 |
-| **清算ヒートマップ** | {liq_cluster_info} | ヒートマップが示す、短期的な価格の**磁石**となる清算クラスタリングを特定。 |
+| **Aggregated OI Trend** | {oi_trend} | Assess the momentum of fund inflow/outflow into the market based on macro data. |
+| **清算ヒートマップ** | {liq_cluster_info} | Identify liquidation clustering that acts as a short-term price **magnet**. |
 
-### 🎯 チャンスとリスク
+### 🎯 Opportunities and Risks
 
-* **メッセージ面 (チャンス):** 市場の恐怖が高まっている今（F&G Index:{fg_index}）、**強力な押し目買いの機会**が到来する可能性があります。
-* **🚨 リスクレベル:** **{risk_level}**。高レバレッジによる清算連鎖リスクが継続しています。重要支持線での反発確認が必須です。
+* **Opportunity:** With market fear rising (F&G Index: {fg_index}), a **strong buy-the-dip opportunity** may arise.
+* **🚨 Risk Level:** **{risk_level}**. Risk of liquidation cascades due to high leverage continues. Confirmation of bounce at key support is mandatory.
 """
         
-        # --- 予測結果の調整 ---
+        # --- Prediction Result Adjustment ---
         final_conclusion = ml_result
-        if (ml_result == "📈 上昇" and fr > 0.00015):
-             final_conclusion = f"⚠️ {ml_result} (ロング過熱注意)"
-        elif (ml_result == "📉 下落" and liq_long > 100_000_000):
-             final_conclusion = f"🚨 {ml_result} (清算連鎖リスク)"
+        if (ml_result == "📈 Up" and fr > 0.00015):
+             final_conclusion = f"⚠️ {ml_result} (Caution: Long Overheating)"
+        elif (ml_result == "📉 Down" and liq_long > 100_000_000):
+             final_conclusion = f"🚨 {ml_result} (Liquidation Cascade Risk)"
         
-        # 推奨戦略の決定
+        # Determine Recommended Strategy
         if uncertainty_score > 0.40 and ml_prediction == 0:
-            strategy_advice_short = "様子見/取引回避を強く推奨。レンジブレイクを待つ。"
-            entry_long = "安全な支持帯"
-            entry_short = "強固なレジスタンス"
+            strategy_advice_short = "Strongly recommend waiting/avoiding trades. Wait for range break."
+            entry_long = "Safe support zone"
+            entry_short = "Strong resistance"
         else:
-             strategy_advice_short = f"ML予測の**{final_conclusion}**に沿った取引を検討。"
-             entry_long = f"現在の価格帯 (${price:.2f}) での押し目買い"
-             entry_short = f"現在の価格帯 (${price:.2f}) での戻り売り"
+             strategy_advice_short = f"Consider trading aligned with ML prediction: **{final_conclusion}**."
+             entry_long = f"Buy the dip at the current price level (${price:.2f})"
+             entry_short = f"Sell the rally at the current price level (${price:.2f})"
         
-        # --- レポート B: 最終結論とアクションプラン ---
+        # --- Report B: Final Conclusion and Action Plan ---
         report_conclusion = f"""
-==> **【最終結論とアクションプラン】** <==
+==> **【Final Conclusion and Action Plan】** <==
 📅 {current_time}
 
 ---
-### 🤖 予測と総合戦略
+### 🤖 Prediction and Overall Strategy
 
-| 項目 | 分析結果 | 確率 | 不確実性スコア |
+| Item | Analysis Result | Probability | Uncertainty Score |
 | :--- | :--- | :--- | :--- |
-| **ML 予測結論** | **{final_conclusion}** | **{max_proba*100:.1f}%** | **{uncertainty_score*100:.1f}%** |
+| **ML Prediction Conclusion** | **{final_conclusion}** | **{max_proba*100:.1f}%** | **{uncertainty_score*100:.1f}%** |
 
-* **総合判断:** **{strategy_advice_short}** 不確実性スコアが高いため、特に短期取引ではポジションサイズを限定してください。
+* **Overall Judgment:** **{strategy_advice_short}** Due to the high uncertainty score, limit position size, especially for short-term trades.
 
-### 🎯 短期戦略（先物/デイトレ）
+### 🎯 Short-term Strategy (Futures/Day Trade)
 
-| 方向 | エントリー目安 | ストップロス | 利確目標 |
+| Direction | Entry Target | Stop Loss | Take Profit Target |
 | :--- | :--- | :--- | :--- |
-| **{'弱気' if ml_prediction <= 0 else '強気'}** | {entry_short if ml_prediction <= 0 else entry_long} | ATRに基づき (${atr:.2f}分) | 直近の高値/安値帯 |
+| **{'Bearish' if ml_prediction <= 0 else 'Bullish'}** | {entry_short if ml_prediction <= 0 else entry_long} | Based on ATR (${atr:.2f} amount) | Recent High/Low zones |
 
-### 📈 中長期戦略（現物/押し目）
+### 📈 Medium/Long-term Strategy (Spot/Dips)
 
-* **戦略:** **様子見〜押し目買い**。市場の恐怖が高まるタイミングをチャンスと捉え、安全な支持帯（例: 90,000米ドル付近）での買い増しを計画。
-* **分散:** BTCに集中せず、ETHやSOLなど成長テーマのアルトコインに資金を分散させ、中長期のリスクを低減。
+* **Strategy:** **Wait and Buy the Dip**. View market fear as an opportunity to plan buying at safe support zones (e.g., around $90,000 USD).
+* **Diversification:** Do not concentrate solely on BTC; diversify funds into altcoins with growth themes (ETH, SOL, etc.) to mitigate medium/long-term risk.
 
-📚 **総括**
-BOTの最終分析は、テクニカルなサインとセンチメントのバランスを見ています。現在の市場は「具材のタイミングがすべて」の鍋料理のような状態です。焦らず、冷静にアクションを取りましょう。
+📚 **Summary**
+The BOT's final analysis balances technical signs and sentiment. The current market is like a pot of stew where "timing the ingredients is everything." Remain calm and execute actions without haste.
 """
         return report_structure, report_conclusion
         
-    # --- (F) Telegram 通知関数 - エラー処理を強化 ---
+    # --- (F) Telegram Notification Function - Enhanced Error Handling ---
     def send_telegram_notification(self, message: str):
-        """通知の実装"""
+        """Implementation of notification"""
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         payload = {'chat_id': TELEGRAM_CHAT_ID, 'text': message, 'parse_mode': 'Markdown'}
         try:
             response = requests.post(url, data=payload)
             if response.status_code == 200:
-                print("✅ Telegramへの通知が完了しました。")
+                print("✅ Telegram notification completed.")
             else:
-                print(f"🚨 Telegram通知エラー (HTTP {response.status_code}): {response.text}")
+                print(f"🚨 Telegram notification error (HTTP {response.status_code}): {response.text}")
         except Exception as e:
-            print(f"🚨 Telegramリクエスト失敗: {e}")
+            print(f"🚨 Telegram request failed: {e}")
