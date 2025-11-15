@@ -1,11 +1,10 @@
-# app.py (最終完全版)
+# app.py (初期デプロイ - 再学習を1分間に設定し、モデルファイル作成を優先)
 
 import os
 from flask import Flask
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime
 from dotenv import load_dotenv 
-# 🚨 fetch_advanced_metrics を正しくインポート
 from futures_ml_bot import FuturesMLBot, fetch_advanced_metrics, FUTURES_SYMBOL
 
 # ローカルテスト時に .env ファイルを読み込む
@@ -13,7 +12,8 @@ load_dotenv()
 
 # --- 環境変数設定 ---
 WEB_SERVICE_PORT = int(os.environ.get('PORT', 8080))
-RETRAIN_INTERVAL_MINUTES = int(os.environ.get('RETRAIN_INTERVAL_MINUTES', 1)) # 新しい一時的な設定
+# 🚨 初期デプロイ時のエラー回避のため、再学習間隔を一時的に1分間に設定
+RETRAIN_INTERVAL_MINUTES = int(os.environ.get('RETRAIN_INTERVAL_MINUTES', 1))
 PREDICTION_INTERVAL_HOURS = int(os.environ.get('PREDICTION_INTERVAL_HOURS', 1))
 
 app = Flask(__name__)
@@ -76,21 +76,18 @@ def start_scheduler():
         "✅ **BOT起動成功とスケジューラ設定完了**\n\n"
         f"サービス名: MEXC分析BOT (高度分析バージョン)\n"
         f"予測間隔: {PREDICTION_INTERVAL_HOURS}時間ごと\n"
-        f"再学習間隔: {RETRAIN_INTERVAL_HOURS}時間ごと\n\n"
-        "**⚡ 初回分析をただちに実行します。**"
+        f"再学習間隔: {RETRAIN_INTERVAL_MINUTES}分ごと (初期設定)\n\n"
+        "間もなく初回または定時予測タスクが実行されます。"
     )
     bot.send_telegram_notification(boot_message)
 
-    # ⚡ 【初回即時実行】通知後、すぐに最初の分析を実行する
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚡ 初回起動時の即時予測を実行中...")
-    run_prediction_and_notify() 
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ 初回起動時の即時予測が完了しました。")
-    
-    # ジョブの追加 (2回目以降の定時実行)
+    # ジョブの追加
     scheduler.add_job(func=run_prediction_and_notify, trigger='interval', hours=PREDICTION_INTERVAL_HOURS, id='prediction_job')
+    # 🚨 再学習を分単位で実行 (モデルファイル作成優先)
     scheduler.add_job(func=run_retrain_and_improve, trigger='interval', minutes=RETRAIN_INTERVAL_MINUTES, id='retrain_job')
+
     scheduler.start()
-    print(f"✅ スケジューラ起動済み。予測:{PREDICTION_INTERVAL_HOURS}時間ごと, 再学習:{RETRAIN_INTERVAL_HOURS}時間ごと")
+    print(f"✅ スケジューラ起動済み。予測:{PREDICTION_INTERVAL_HOURS}時間ごと, 再学習:{RETRAIN_INTERVAL_MINUTES}分ごと")
     
 @app.route('/')
 def health_check():
