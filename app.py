@@ -19,7 +19,7 @@ PREDICTION_INTERVAL_HOURS = int(os.environ.get('PREDICTION_INTERVAL_HOURS', 1))
 app = Flask(__name__)
 scheduler = BackgroundScheduler()
 
-# 🚨 BOTの初期化 (BOTインスタンスはグローバルに保持)
+# BOTの初期化 (BOTインスタンスはグローバルに保持)
 bot = None
 try:
     bot = FuturesMLBot() 
@@ -71,7 +71,7 @@ def start_scheduler():
 
     print("--- スケジューラ設定開始 ---")
 
-    # 🚨 初回起動通知
+    # 初回起動通知
     boot_message = (
         "✅ **BOT起動成功とスケジューラ設定完了**\n\n"
         f"サービス名: MEXC分析BOT (高度分析バージョン)\n"
@@ -83,7 +83,7 @@ def start_scheduler():
 
     # ジョブの追加
     scheduler.add_job(func=run_prediction_and_notify, trigger='interval', hours=PREDICTION_INTERVAL_HOURS, id='prediction_job')
-    # 🚨 再学習を分単位で実行 (モデルファイル作成優先)
+    # 再学習を分単位で実行 (モデルファイル作成優先)
     scheduler.add_job(func=run_retrain_and_improve, trigger='interval', minutes=RETRAIN_INTERVAL_MINUTES, id='retrain_job')
 
     scheduler.start()
