@@ -223,7 +223,7 @@ class FuturesMLBot:
         # 🚨 ロバストネスチェック: 予測に利用可能なデータがあるか確認
         if X_latest.empty:
             report = (
-                "🚨 **予測スキップ通知:** OHLCVデータが不足しているか、特徴量生成中にデータが全て削除されました。\n"
+                "🚨 <b>予測スキップ通知:</b> OHLCVデータが不足しているか、特徴量生成中にデータが全て削除されました。<br>"
                 f"データ取得期間: {len(df_latest)}バー。特徴量計算に必要な期間: 20バー+ラグ3が必要です。"
             )
             self.send_telegram_notification(report)
@@ -252,7 +252,7 @@ class FuturesMLBot:
     # --- (E) レポート生成ヘルパー関数 - 日本語版 ---
     def _generate_two_part_reports(self, latest_price_data: pd.Series, advanced_data: Dict[str, Any], ml_prediction: int, proba: np.ndarray) -> Tuple[str, str]:
         """
-        レポートを「市場構造と主要ドライバー分析」と「最終結論と行動計画」の2部構成で生成（日本語版）
+        レポートを「市場構造と主要ドライバー分析」と「最終結論と行動計画」の2部構成で生成（日本語版、HTML形式）
         """
         # 価格データ
         price = latest_price_data['Close']
@@ -303,40 +303,43 @@ class FuturesMLBot:
              risk_level = "高🔴🔴"
              
         
-        # --- レポートA: 市場構造と主要ドライバー分析 (Markdownテーブルを整形) ---
+        # --- レポートA: 市場構造と主要ドライバー分析 (HTML形式) ---
         report_structure = f"""
-==> **【BTC 市場ドライバー分析】** <==
+<b>==> 【BTC 市場ドライバー分析】 <==</b>
 📅 {current_time}
 
-📌 **主要ポイント**
-* *主要ドライバー:* 現在の市場トレンドの主要なドライバーは **{main_cause}** です。
-* *センチメント:* Fear & Greed Indexは **{fg_index}**（「**{fg_value}**」レベル）であり、市場のボラティリティを示唆しています。
-* *テクニカル環境:* BTC価格 **${price:.2f}** は、20日SMA（${sma:.2f}）を {'🟢 上回っています' if price > sma else '🔴 下回っています'}。短期トレンドは {'強気' if price > sma else '弱気'} です。
+📌 <b>主要ポイント</b>
+<ul>
+    <li><b>主要ドライバー:</b> 現在の市場トレンドの主要なドライバーは <b>{main_cause}</b> です。</li>
+    <li><b>センチメント:</b> Fear & Greed Indexは <b>{fg_index}</b>（「{fg_value}」レベル）であり、市場のボラティリティを示唆しています。</li>
+    <li><b>テクニカル環境:</b> BTC価格 <b>${price:.2f}</b> は、20日SMA（${sma:.2f}）を {'🟢 上回っています' if price > sma else '🔴 下回っています'}。短期トレンドは {'強気' if price > sma else '弱気'} です。</li>
+</ul>
 
----
-### 📉 市場ドライバーとリスク分析
+<hr>
+<h3>📉 市場ドライバーとリスク分析</h3>
+<pre>
+カテゴリ        | 指標         | 現在値/ステータス | 分析/示唆
+--------------------------------------------------------------------------------
+需給・流動性    | FR           | {fr*100:.4f}%         | {'🚨 ロングのコスト高。スクイーズリスクあり。' if fr > 0.00015 else '中立。'}
+                | L/S比率      | {lsr:.2f}           | {'🔴 ロング優勢。レバレッジの不均衡。' if lsr > 1.1 else '🟡 バランス。'}
+                | OI変化率(4H) | {oi_chg*100:.1f}%        | {'🔴 増加中。トレンド継続の勢い。' if oi_chg > 0.03 else '🟢 減少中。トレンド減速の可能性。'}
+センチメント    | F&G指数      | {fg_index} ({fg_value}) | {'極度の恐怖。逆張り機会か、底値割れの警告。' if fg_index <= 20 else '楽観的。短期的な過熱の可能性。'}
+                | 24Hロング清算額| ${liq_long:,.0f}    | {'🚨 大規模清算発生。フラッシュクラッシュに注意。' if liq_long > 100000000 else '通常。'}
+ボラティリティ  | ATR          | ${atr:.2f}          | {(atr / price) * 100:.2f}%。
+</pre>
 
-| カテゴリ | 指標 | 現在値 / ステータス | 分析 / 示唆 |
-|:---|:---|:---|:---|
-| **需給・流動性** | FR | {fr*100:.4f}% | {'🚨 ロングのコスト高。スクイーズリスクあり。' if fr > 0.00015 else '中立。'} |
-| | L/S比率 | {lsr:.2f} | {'🔴 ロング優勢。レバレッジの不均衡。' if lsr > 1.1 else '🟡 バランス。'} |
-| | OI変化率 (4H)| {oi_chg*100:.1f}% | {'🔴 増加中。トレンド継続の勢い。' if oi_chg > 0.03 else '🟢 減少中。トレンド減速の可能性。'} |
-| **センチメント** | F&G指数| {fg_index} ({fg_value}) | {'極度の恐怖。逆張り機会か、底値割れの警告。' if fg_index <= 20 else '楽観的。短期的な過熱の可能性。'} |
-| | 24Hロング清算額| ${liq_long:,.0f} | {'🚨 大規模清算発生。フラッシュクラッシュに注意。' if liq_long > 100_000_000 else '通常。'} |
-| **ボラティリティ** | ATR | ${atr:.2f} | **{(atr / price) * 100:.2f}%**。 |
+<hr>
+<h3>📊 MEXCダッシュボード洞察</h3>
+<ul>
+    <li><b>総建玉トレンド:</b> {oi_trend}</li>
+    <li><b>清算ヒートマップ:</b> {liq_cluster_info}</li>
+</ul>
 
----
-### 📊 MEXCダッシュボード洞察 (マクロデータ / ヒートマップ)
-
-| 項目 | 洞察 | 示唆 |
-|:---|:---|:---|
-| **総建玉トレンド** | {oi_trend} | 市場への資金流入/流出の勢いを評価。 |
-| **清算ヒートマップ** | {liq_cluster_info} | 短期的な価格の**マグネット**として機能するクラスターを特定。 |
-
-### 🎯 機会とリスク
-
-* **機会:** 市場の恐怖が上昇している場合（F&G指数: {fg_index}）、**強い押し目買いの機会**が生まれる可能性があります。
-* **🚨 リスクレベル:** **{risk_level}**。高レバレッジによる清算カスケードのリスク継続。主要サポートでの反発確認が必須です。
+<h3>🎯 機会とリスク</h3>
+<ul>
+    <li><b>機会:</b> 市場の恐怖が上昇している場合（F&G指数: {fg_index}）、<b>強い押し目買いの機会</b>が生まれる可能性があります。</li>
+    <li><b>🚨 リスクレベル:</b> <b>{risk_level}</b>。高レバレッジによる清算カスケードのリスク継続。主要サポートでの反発確認が必須です。</li>
+</ul>
 """
         
         # --- 予測結果の調整 ---
@@ -352,36 +355,41 @@ class FuturesMLBot:
             entry_long = "安全なサポートゾーン"
             entry_short = "強力なレジスタンス"
         else:
-             strategy_advice_short = f"ML予測に合わせた取引を検討してください: **{final_conclusion}**。"
+             strategy_advice_short = f"ML予測に合わせた取引を検討してください: <b>{final_conclusion}</b>。"
              entry_long = f"現在価格水準（${price:.2f}）での押し目買い"
              entry_short = f"現在価格水準（${price:.2f}）での売りの反発"
         
-        # --- レポートB: 最終結論と行動計画 (Markdownテーブルを整形) ---
+        # --- レポートB: 最終結論と行動計画 (HTML形式) ---
         report_conclusion = f"""
-==> **【最終結論と行動計画】** <==
+<b>==> 【最終結論と行動計画】 <==</b>
 📅 {current_time}
 
----
-### 🤖 予測と全体戦略
+<hr>
+<h3>🤖 予測と全体戦略</h3>
+<pre>
+項目         | 分析結果                         | 確率           | 不確実性スコア
+------------------------------------------------------------------------------------
+ML予測結論   | <b>{final_conclusion}</b>             | {max_proba*100:.1f}%          | {uncertainty_score*100:.1f}%
+</pre>
 
-| 項目 | 分析結果 | 確率 | 不確実性スコア |
-|:---|:---|:---|:---|
-| **ML予測結論** | **{final_conclusion}** | **{max_proba*100:.1f}%** | **{uncertainty_score*100:.1f}%** |
+<ul>
+    <li><b>全体判断:</b> <b>{strategy_advice_short}</b>。高い不確実性スコアのため、特に短期取引ではポジションサイズを制限してください。</li>
+</ul>
 
-* **全体判断:** **{strategy_advice_short}**。高い不確実性スコアのため、特に短期取引ではポジションサイズを制限してください。
+<h3>🎯 短期戦略（先物/デイトレード）</h3>
+<pre>
+方向性           | エントリー目標                  | 損切り(SL)           | 利益確定目標
+------------------------------------------------------------------------------------
+{'弱気' if ml_prediction <= 0 else '強気'} | {entry_short if ml_prediction <= 0 else entry_long} | ATRに基づいた金額（${atr:.2f}） | 直近の高値/安値ゾーン
+</pre>
 
-### 🎯 短期戦略（先物/デイトレード）
+<h3>📈 中長期戦略（現物/押し目）</h3>
+<ul>
+    <li><b>戦略:</b> <i>待ちと押し目買い</i>。市場の恐怖を、安全なサポートゾーン（例：約 $90,000 USD）で買いを入れる計画を立てる機会と捉えます。</li>
+    <li><b>分散:</b> BTCだけに集中せず、中長期的なリスクを軽減するために成長テーマを持つアルトコイン（ETH、SOLなど）にも資金を分散してください。</li>
+</ul>
 
-| 方向性 | エントリー目標 | 損切り（ストップロス） | 利益確定目標 |
-|:---|:---|:---|:---|
-| **{'弱気' if ml_prediction <= 0 else '強気'}** | {entry_short if ml_prediction <= 0 else entry_long} | ATRに基づいた金額（${atr:.2f}） | 直近の高値/安値ゾーン |
-
-### 📈 中長期戦略（現物/押し目）
-
-* **戦略:** *待ちと押し目買い*。市場の恐怖を、安全なサポートゾーン（例：約 $90,000 USD）で買いを入れる計画を立てる機会と捉えます。
-* **分散:** BTCだけに集中せず、中長期的なリスクを軽減するために成長テーマを持つアルトコイン（ETH、SOLなど）にも資金を分散してください。
-
-📚 **まとめ**
+📚 <b>まとめ</b>
 BOTの最終分析は、テクニカルなサインとセンチメントのバランスを取っています。現在の市場は「材料のタイミングが全て」という煮詰まった状態です。冷静さを保ち、焦らずに行動を実行してください。
 """
         return report_structure, report_conclusion
@@ -390,10 +398,8 @@ BOTの最終分析は、テクニカルなサインとセンチメントのバ�
     def send_telegram_notification(self, message: str):
         """通知の実装"""
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        # parse_mode='Markdown' を使用するため、特殊文字のエラーが起こりやすい。
-        # 今回は、Markdownテーブルのパイプ文字の前後のスペースを削除し、
-        # 構造の崩れを防ぐために修正を行いました。
-        payload = {'chat_id': TELEGRAM_CHAT_ID, 'text': message, 'parse_mode': 'Markdown'}
+        # parse_modeをHTMLに変更
+        payload = {'chat_id': TELEGRAM_CHAT_ID, 'text': message, 'parse_mode': 'HTML'}
         try:
             response = requests.post(url, data=payload)
             if response.status_code == 200:
