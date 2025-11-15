@@ -37,6 +37,7 @@ def fetch_advanced_metrics(exchange: ccxt.Exchange, symbol: str) -> Dict[str, An
     
     try:
         # 1. 資金調達率 (FR) の取得
+        # ccxtのfetch_tickerを使用
         ticker = exchange.fetch_ticker(mexc_symbol)
         metrics['funding_rate'] = float(ticker.get('fundingRate', 0) or 0)
         
@@ -48,6 +49,7 @@ def fetch_advanced_metrics(exchange: ccxt.Exchange, symbol: str) -> Dict[str, An
         metrics['fg_value'] = fg_data[0].get('value_classification', 'Neutral')
 
         # 3. 清算データ取得 (Coinglass API - 仮定)
+        # 実際のAPIに合わせて調整が必要です
         liquidation_response = requests.get(COINGLASS_API_URL, params={'symbol': 'BTC'}, timeout=5)
         liquidation_response.raise_for_status()
         liq_data = liquidation_response.json().get('data', {})
@@ -56,13 +58,14 @@ def fetch_advanced_metrics(exchange: ccxt.Exchange, symbol: str) -> Dict[str, An
         
         # 4. OI/LSR取得 (MEXC API - 仮定のロジックを再挿入)
         # ⚠️ 実運用時は、この部分をMEXCの実際のAPIエンドポイントに置き換えてください。
-        metrics['ls_ratio'] = 1.05 # 仮の値
-        metrics['oi_change_4h'] = 0.01 # 仮の値
+        metrics['ls_ratio'] = 1.05 # 仮の値 (1.00 - 1.30 の範囲で変動をシミュレート)
+        metrics['oi_change_4h'] = 0.01 # 仮の値 (-0.05 - 0.05 の範囲で変動をシミュレート)
 
         return metrics
     
     except requests.exceptions.RequestException as req_e:
         print(f"🚨 外部APIリクエストエラー: {req_e}")
+        # APIが失敗した場合のフォールバック値
         return {
             'funding_rate': 0.0, 'ls_ratio': 1.0, 'oi_change_4h': 0.0, 
             'fg_index': 50, 'fg_value': 'API Failed', 
@@ -70,6 +73,7 @@ def fetch_advanced_metrics(exchange: ccxt.Exchange, symbol: str) -> Dict[str, An
         }
     except Exception as e:
         print(f"🚨 先物指標データ処理エラー: {e}")
+        # その他のエラーのフォールバック値
         return {
             'funding_rate': 0.0, 'ls_ratio': 1.0, 'oi_change_4h': 0.0, 
             'fg_index': 50, 'fg_value': 'API Failed', 
@@ -89,9 +93,10 @@ class FuturesMLBot:
             'options': {'defaultType': 'future'},
             'enableRateLimit': True,
         })
-        self.target_threshold = 0.0005
-        self.prediction_period = 1
-        self.feature_cols = [] 
+        # 予測のターゲットとなる変動率の閾値 (例: 0.05%以上の変動を予測対象とする)
+        self.target_threshold = 0.0005 
+        self.prediction_period = 1 # 何期間後の変動を予測するか (1 = 次の足)
+        self.feature_cols = [] # 特徴量列名リストを保持
 
     # --- (A) データ取得 (OHLCV) ---
     def fetch_ohlcv_data(self, limit: int = 100, timeframe: str = TIMEFRAME) -> pd.DataFrame:
@@ -109,17 +114,22 @@ class FuturesMLBot:
     def create_ml_features(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series]:
         """実戦ベースの特徴量を作成する"""
         
+        # テクニカル指標の計算
         df['SMA'] = ta.sma(df['Close'], length=20)
         df['RSI'] = ta.rsi(df['Close'], length=14)
         df['MACD_H'] = ta.macd(df['Close'])['MACDh_12_26_9']
         df['Vol_Diff'] = df['Volume'] / ta.sma(df['Volume'], length=20)
         df['ATR'] = ta.atr(df['High'], df['Low'], df['Close'], length=14) 
 
+        # ラグ特徴量の追加 (過去の値を特徴量とする)
         for lag in [1, 2, 3]:
             df[f'RSI_L{lag}'] = df['RSI'].shift(lag)
             df[f'Price_L{lag}'] = df['Close'].pct_change(lag).shift(lag)
             
+        # ターゲット変数の作成 (次期間の終値の変動率)
         future_change = df['Close'].pct_change(periods=-self.prediction_period).shift(self.prediction_period)
+        
+        # ターゲット変数 ('Target') を [-1 (下落), 0 (レンジ), 1 (上昇)] に分類
         df['Target'] = np.select(
             [future_change > self.target_threshold, future_change < -self.target_threshold],
             [1, -1], default=0
@@ -127,8 +137,10 @@ class FuturesMLBot:
         
         df.dropna(inplace=True)
         
+        # 特徴量列リストの初回生成
         if not self.feature_cols:
             cols = [col for col in df.columns if col not in ['Open', 'High', 'Low', 'Close', 'Volume', 'Target', 'timestamp']]
+            # float64またはint64のデータ型のみを特徴量として使用
             self.feature_cols = [col for col in cols if df[col].dtype in [np.float64, np.int64]]
         
         return df[self.feature_cols], df['Target']
@@ -137,11 +149,14 @@ class FuturesMLBot:
     def train_and_save_model(self, df_long_term: pd.DataFrame) -> bool:
         """長期データからモデルを再学習し、ファイルに保存する"""
         print("🧠 モデル再学習タスク開始...")
+        # 特徴量とターゲット変数の作成
         X_train, Y_train = self.create_ml_features(df_long_term.copy())
         
+        # モデルの定義と学習
         model = RandomForestClassifier(n_estimators=200, random_state=42, class_weight='balanced', max_depth=10)
         model.fit(X_train, Y_train)
         
+        # モデルをファイルに保存
         joblib.dump(model, MODEL_FILENAME)
         print("✅ モデル再学習完了し、ファイルに保存しました。")
         return True
@@ -151,18 +166,22 @@ class FuturesMLBot:
         """最新データで予測を実行し、2つの報告書を生成・通知する"""
         
         try:
+            # モデルをファイルから読み込み
             model = joblib.load(MODEL_FILENAME)
         except FileNotFoundError:
             report = "🚨 エラー: モデルファイルが見つかりません。最初に学習とコミットを行ってください。"
             self.send_telegram_notification(report)
             return False
 
+        # 最新データの特徴量を作成
         X_latest, _ = self.create_ml_features(df_latest.copy())
         latest_X = X_latest.iloc[[-1]] 
         
+        # 予測の実行
         prediction_val = model.predict(latest_X)[0]
         prediction_proba = model.predict_proba(latest_X)[0]
         
+        # 2つのレポートを生成
         report_structure, report_conclusion = self._generate_two_part_reports(
             df_latest.iloc[-1], 
             advanced_data, 
@@ -170,6 +189,7 @@ class FuturesMLBot:
             prediction_proba
         )
         
+        # Telegramに送信
         self.send_telegram_notification(report_structure)
         self.send_telegram_notification(report_conclusion)
         
@@ -180,14 +200,17 @@ class FuturesMLBot:
         """
         レポートを「市場構造と主因分析」と「最終結論と戦略」の2つに分けて生成する
         """
+        # 価格データ
         price = latest_price_data['Close']
         sma = latest_price_data['SMA']
         rsi = latest_price_data['RSI']
         atr = latest_price_data['ATR']
         
+        # 予測結果のマップ
         pred_map = {-1: "📉 下落", 0: "↔️ レンジ", 1: "📈 上昇"}
         ml_result = pred_map.get(ml_prediction, "不明")
         
+        # 高度な指標
         fr = advanced_data.get('funding_rate', 0)
         lsr = advanced_data.get('ls_ratio', 1.0)
         oi_chg = advanced_data.get('oi_change_4h', 0.0)
@@ -212,6 +235,7 @@ class FuturesMLBot:
              risk_level = "高🔴🔴"
              
         
+        # --- レポート A: 市場構造と主因分析 ---
         report_structure = f"""
 ==> **【BTC 市場の主因分析】** <==
 📅 {current_time}
@@ -239,7 +263,7 @@ class FuturesMLBot:
 * **🚨 リスクレベル:** **{risk_level}**。高レバレッジによる清算連鎖リスクが継続しています。重要支持線での反発確認が必須です。
 """
         
-        # 最終結論の調整 (スクイーズ/不確実性警戒)
+        # --- 予測結果の調整 ---
         final_conclusion = ml_result
         if (ml_result == "📈 上昇" and fr > 0.00015):
              final_conclusion = f"⚠️ {ml_result} (ロング過熱注意)"
@@ -256,6 +280,7 @@ class FuturesMLBot:
              entry_long = f"現在の価格帯 (${price:.2f}) での押し目買い"
              entry_short = f"現在の価格帯 (${price:.2f}) での戻り売り"
         
+        # --- レポート B: 最終結論とアクションプラン ---
         report_conclusion = f"""
 ==> **【最終結論とアクションプラン】** <==
 📅 {current_time}
