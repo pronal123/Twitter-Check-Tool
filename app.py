@@ -1,4 +1,4 @@
-# app.py (初期デプロイ - 再学習を1分間に設定し、モデルファイル作成を優先)
+# app.py (再学習間隔を4時間に修正)
 
 import os
 from flask import Flask
@@ -12,8 +12,9 @@ load_dotenv()
 
 # --- 環境変数設定 ---
 WEB_SERVICE_PORT = int(os.environ.get('PORT', 8080))
-# 🚨 初期デプロイ時のエラー回避のため、再学習間隔を一時的に1分間に設定
-RETRAIN_INTERVAL_MINUTES = int(os.environ.get('RETRAIN_INTERVAL_MINUTES', 1))
+# 🚨 修正: モデル再学習の間隔を、分から時間に変更し、初期値を4時間に設定
+# 大量のデータ取得とモデル学習は時間がかかるため、安全のため4時間ごとに設定します。
+RETRAIN_INTERVAL_HOURS = int(os.environ.get('RETRAIN_INTERVAL_HOURS', 4))
 PREDICTION_INTERVAL_HOURS = int(os.environ.get('PREDICTION_INTERVAL_HOURS', 1))
 
 app = Flask(__name__)
@@ -22,6 +23,7 @@ scheduler = BackgroundScheduler()
 # BOTの初期化 (BOTインスタンスはグローバルに保持)
 bot = None
 try:
+    # 認証情報が不足しているとここでエラーが発生
     bot = FuturesMLBot() 
 except ValueError as e:
     print(f"致命的な初期化エラー: {e}")
@@ -76,18 +78,18 @@ def start_scheduler():
         "✅ **BOT起動成功とスケジューラ設定完了**\n\n"
         f"サービス名: MEXC分析BOT (高度分析バージョン)\n"
         f"予測間隔: {PREDICTION_INTERVAL_HOURS}時間ごと\n"
-        f"再学習間隔: {RETRAIN_INTERVAL_MINUTES}分ごと (初期設定)\n\n"
+        f"再学習間隔: {RETRAIN_INTERVAL_HOURS}時間ごと (モデル学習の安全性を確保)\n\n"
         "間もなく初回または定時予測タスクが実行されます。"
     )
     bot.send_telegram_notification(boot_message)
 
     # ジョブの追加
     scheduler.add_job(func=run_prediction_and_notify, trigger='interval', hours=PREDICTION_INTERVAL_HOURS, id='prediction_job')
-    # 再学習を分単位で実行 (モデルファイル作成優先)
-    scheduler.add_job(func=run_retrain_and_improve, trigger='interval', minutes=RETRAIN_INTERVAL_MINUTES, id='retrain_job')
+    # 修正された間隔を使用
+    scheduler.add_job(func=run_retrain_and_improve, trigger='interval', hours=RETRAIN_INTERVAL_HOURS, id='retrain_job')
 
     scheduler.start()
-    print(f"✅ スケジューラ起動済み。予測:{PREDICTION_INTERVAL_HOURS}時間ごと, 再学習:{RETRAIN_INTERVAL_MINUTES}分ごと")
+    print(f"✅ スケジューラ起動済み。予測:{PREDICTION_INTERVAL_HOURS}時間ごと, 再学習:{RETRAIN_INTERVAL_HOURS}時間ごと")
     
 @app.route('/')
 def health_check():
