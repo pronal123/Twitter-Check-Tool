@@ -1,52 +1,67 @@
-# app.py (モデル作成後の設定 - 再学習を24時間に戻す)
+# app.py (起動時にモデルを強制学習する修正を含む完全版)
 
 import os
 from flask import Flask
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime
 from dotenv import load_dotenv 
-from futures_ml_bot import FuturesMLBot, fetch_advanced_metrics, FUTURES_SYMBOL
+# futures_ml_botモジュールから必要なコンポーネントをインポート
+from futures_ml_bot import FuturesMLBot, fetch_advanced_metrics, FUTURES_SYMBOL, MODEL_FILENAME
 
 # ローカルテスト時に .env ファイルを読み込む
+# デプロイ環境では効果はありません
 load_dotenv() 
 
 # --- 環境変数設定 ---
+# 環境変数 'PORT' が設定されていない場合、8080を使用
 WEB_SERVICE_PORT = int(os.environ.get('PORT', 8080))
-RETRAIN_INTERVAL_HOURS = int(os.environ.get('RETRAIN_INTERVAL_HOURS', 24)) # 24時間に戻す
+# 環境変数から再学習間隔を取得。デフォルトは24時間
+RETRAIN_INTERVAL_HOURS = int(os.environ.get('RETRAIN_INTERVAL_HOURS', 24))
+# 環境変数から予測間隔を取得。デフォルトは1時間
 PREDICTION_INTERVAL_HOURS = int(os.environ.get('PREDICTION_INTERVAL_HOURS', 1))
 
 app = Flask(__name__)
 scheduler = BackgroundScheduler()
 
-# 🚨 BOTの初期化 (BOTインスタンスはグローバルに保持)
+# BOTの初期化 (BOTインスタンスはグローバルに保持)
 bot = None
 try:
+    # 認証情報が不足しているとValueErrorが発生
     bot = FuturesMLBot() 
 except ValueError as e:
+    # APIキー不足などの致命的なエラーをコンソールに出力
     print(f"致命的な初期化エラー: {e}")
     
 # --- 予測実行タスク (定時) ---
 def run_prediction_and_notify():
-    # ... (変更なし) ...
+    """予測を実行し、Telegramに通知する関数"""
     if bot is None:
         print(f"[{datetime.now().strftime('%H:%M:%S')}] 🚨 BOTインスタンスがありません。タスクスキップ。")
         return
 
     try:
+        # モデルファイルが存在しない場合は、予測をスキップする（初回強制実行でカバーされているはず）
+        if not os.path.exists(MODEL_FILENAME):
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ モデルファイル '{MODEL_FILENAME}' が存在しません。予測をスキップし、再学習待ち。")
+            return
+
         print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚙️ 予測タスク開始...")
         
+        # 高度な分析指標を取得
         advanced_data = fetch_advanced_metrics(bot.exchange, FUTURES_SYMBOL)
+        # 最新のOHLCVデータを取得 (100期間)
         df_latest = bot.fetch_ohlcv_data(limit=100) 
+        # 予測を実行し、Telegramにレポートを送信
         bot.predict_and_report(df_latest, advanced_data)
         
         print("✅ 予測・通知タスク完了。")
              
     except Exception as e:
-        print(f"🚨 予測タスクエラー: {e}")
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] 🚨 予測タスクエラー: {e}")
 
 # --- モデル再学習タスク (定時) ---
 def run_retrain_and_improve():
-    # ... (変更なし) ...
+    """モデルの再学習と構築を行う関数"""
     if bot is None:
         print(f"[{datetime.now().strftime('%H:%M:%S')}] 🚨 BOTインスタンスがありません。再学習スキップ。")
         return
@@ -54,11 +69,13 @@ def run_retrain_and_improve():
     try:
         print(f"[{datetime.now().strftime('%H:%M:%S')}] 🧠 再学習タスク開始...")
         
+        # モデル学習のための長期データ (2000期間) を取得
         df_long_term = bot.fetch_ohlcv_data(limit=2000) 
+        # モデルを学習し、ファイルに保存 (MODEL_FILENAMEで定義されたパス)
         bot.train_and_save_model(df_long_term)
         
     except Exception as e:
-        print(f"🚨 致命的な再学習タスクエラーが発生しました: {e}")
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] 🚨 致命的な再学習タスクエラーが発生しました: {e}")
 
 # --- スケジューラの初期化と起動 ---
 def start_scheduler():
@@ -68,6 +85,12 @@ def start_scheduler():
         return
 
     print("--- スケジューラ設定開始 ---")
+
+    # 🚨 【重要修正】BOT起動時に、最初の予測の前に必ずモデルを初回学習する
+    # これにより、予測タスクがモデルファイルのない状態で実行されるのを防ぎます。
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] 🚀 初回モデル構築を強制実行中...")
+    run_retrain_and_improve()
+    print("✅ 初回モデル構築完了。")
 
     # 初回起動通知
     boot_message = (
@@ -81,7 +104,6 @@ def start_scheduler():
 
     # ジョブの追加
     scheduler.add_job(func=run_prediction_and_notify, trigger='interval', hours=PREDICTION_INTERVAL_HOURS, id='prediction_job')
-    # 🚨 再学習を時間単位で実行 (通常運用)
     scheduler.add_job(func=run_retrain_and_improve, trigger='interval', hours=RETRAIN_INTERVAL_HOURS, id='retrain_job')
 
     scheduler.start()
@@ -89,7 +111,8 @@ def start_scheduler():
     
 @app.route('/')
 def health_check():
-    """Renderのヘルスチェック用エンドポイント"""
+    """Renderなどのデプロイサービスでのヘルスチェック用エンドポイント"""
+    # スケジューラが起動しているか、BOTが初期化されているかを返す
     return "ML Bot Scheduler is running!" if bot else "ML Bot Initialization Failed.", 200
 
 if __name__ == '__main__':
