@@ -197,11 +197,14 @@ class FuturesMLBot:
     def _generate_two_part_reports(self, latest_price_data: pd.Series, latest_features: pd.Series, advanced_data: Dict[str, Any], ml_prediction: int, proba: np.ndarray) -> Tuple[str, str]:
         """
         レポートを「市場構造と主要ドライバー分析」と「最終結論と行動計画」の2部構成で生成（日本語版、HTML形式）
+        -> ユーザーの要望に基づき、より「市場報告分析」に特化し、「今後の見通し」を強調するよう修正。
         """
         # 価格データとテクニカル指標 (実践データ)
         price = latest_price_data['Close']
         sma = latest_features.get('SMA', price)
         atr = latest_features.get('ATR', price * 0.01)
+        rsi = latest_features.get('RSI', 50)
+        macd_h = latest_features.get('MACD_H', 0)
 
         # 予測結果マップ
         pred_map = {-1: "📉 下落", 0: "↔️ レンジ", 1: "📈 上昇"}
@@ -222,34 +225,45 @@ class FuturesMLBot:
         # 🆕 無料データに基づく「市場過熱シグナル」のロジック (OI/LSRの代わり)
         # ----------------------------------------------------------------
         overheat_score = 0
-        overheat_detail = "中立"
         risk_level = "中🔴"
         market_signal = "中立/テクニカル主導"
 
         # 1. 貪欲シグナル (ロング過熱の可能性)
         if fg_index >= 75:
             overheat_score += 1
-            overheat_detail = "極端な貪欲"
         # 2. FRシグナル (ロングのコスト高・調整リスク)
-        if fr >= 0.00015: # 0.015% 以上で高水準と見なす
+        if fr >= 0.00015: 
             overheat_score += 1
-            if overheat_detail == "中立":
-                overheat_detail = "高いFR"
-            else:
-                overheat_detail += " & 高いFR"
+            
+        # テクニカル分析の簡潔な洞察
+        rsi_comment = "中立（上昇余地あり）"
+        if rsi >= 70:
+            rsi_comment = "買われすぎ水準 (短期調整注意)"
+        elif rsi <= 30:
+            rsi_comment = "売られすぎ水準 (反発期待)"
+            
+        macd_comment = "勢いなし"
+        # MACDがマイナスからプラスに転換した場合 (ゴールデンクロスに近い状態)
+        if macd_h > 0 and latest_features.get('MACD_H_L1', 0) < 0:
+            macd_comment = "📈 ゴールデンクロス発生の兆候（強い強気シグナル）"
+        elif macd_h > 0:
+            macd_comment = "強気モメンタム継続"
+        elif macd_h < 0:
+            macd_comment = "弱気モメンタム継続"
+
 
         if overheat_score >= 2:
             market_signal = "🚨 極端なロング過熱リスク（調整警戒）"
             risk_level = "高🔴🔴"
-            main_cause = "無料データ分析に基づく過度な楽観と調整リスク"
+            main_cause = "過度な楽観と調整リスク"
         elif overheat_score == 1:
              market_signal = "⚠️ 過熱の兆候（FRまたはFGI）"
              risk_level = "中高🔴"
-             main_cause = "無料データ分析に基づくセンチメントの傾き"
+             main_cause = "センチメントの傾き"
         elif fg_index <= 25:
-             market_signal = "🟢 極度の恐怖（ショート解消または底打ちの可能性）"
+             market_signal = "🟢 極度の恐怖（底打ちの可能性）"
              risk_level = "中高🔴"
-             main_cause = "無料データ分析に基づく極端な恐怖によるポジション調整"
+             main_cause = "極端な恐怖によるポジション調整"
         else:
              main_cause = "テクニカル環境と市場センチメント"
         # ----------------------------------------------------------------
@@ -260,33 +274,36 @@ class FuturesMLBot:
         uncertainty_score = 1.0 - max_proba
         
         
-        # --- レポートA: 市場構造と主要ドライバー分析 (HTML形式) ---
+        # --- レポートA: BTC市場 現状と短期見通し 分析 (HTML形式) ---
         report_structure = f"""
-<b>【BTC 市場ドライバー分析 - 無料データに基づく】</b>
-📅 {current_time}
+<b>【BTC市場 現状と短期見通し 分析レポート】</b>
+📅 {current_time} | 4h足分析
 
-📌 <b>主要ポイント</b>
-<b>主要ドライバー:</b> 現在の市場トレンドの主要なドライバーは <b>{main_cause}</b> です。
-<b>センチメント:</b> Fear & Greed Indexは <b>{fg_index}</b>（「{fg_value}」レベル）であり、市場のボラティリティを示唆しています。
-<b>テクニカル環境:</b> BTC価格 <b>${price:.2f}</b> は、20日SMA（${sma:.2f}）を {'🟢 上回っています' if price > sma else '🔴 下回っています'}。短期トレンドは {'強気' if price > sma else '弱気'} です。
+<h3>🔍 1. 市場構造の現状把握</h3>
+📌 <b>現在のドライバー:</b> <b>{main_cause}</b> が市場の方向性を主導しています。
+📌 <b>現在価格:</b> <b>${price:.2f}</b>
 
 -------------------------------------
-<b>📉 無料データに基づくセンチメント分析 (OI/LSRの代わり)</b>
+<b>📊 テクニカル分析（短期トレンド）</b>
+<pre>
+指標           | 現在値/ステータス     | 洞察
+--------------------------------------------------------------------------------
+20-SMA         | ${sma:.2f}            | 価格はSMAを{'🟢 上回る' if price > sma else '🔴 下回る'}。短期トレンドは{'強気' if price > sma else '弱気'}。
+RSI (14)       | {rsi:.2f}              | <b>{rsi_comment}</b>。
+MACD Hist.     | {macd_h:.2f}           | <b>{macd_comment}</b>。
+ATR (ボラティリティ) | ${atr:.2f}            | 過去14期間の平均変動幅。現在価格の<b>{atr/price*100:.2f}%</b>。
+</pre>
+-------------------------------------
+<h3>📈 2. センチメントと過熱シグナル（OI/LSR代替分析）</h3>
 <pre>
 カテゴリ        | 指標         | 現在値/ステータス     | 分析/示唆
 --------------------------------------------------------------------------------
-需給・流動性    | FR           | {fr*100:.4f}%             | {'🚨 ロングのコスト高。スクイーズリスクあり。' if fr > 0.00015 else '中立。'}
-                | F&G指数      | {fg_index} ({fg_value}) | {'極度の恐怖。逆張り機会か、底値割れの警告。' if fg_index <= 20 else '楽観的。短期的な過熱の可能性。'}
-                | <b>過熱シグナル</b> | <b>{market_signal}</b>  | FRとF&G指数を組み合わせた無料分析。
---------------------------------------------------------------------------------
-<b>⚠️ 有料APIが必要な集計データ</b>
-                | L/S比率(集計)| {ls_ratio}           | 取得不可。
-                | OI総量(集計)| 取得不可             | {oi_trend}
+需給・流動性    | FR           | {fr*100:.4f}%             | {'🚨 ロングのコストが高騰。調整圧力に注意。' if fr > 0.00015 else '中立水準。'}
+                | F&G指数      | {fg_index} ({fg_value}) | {'極度の恐怖。底打ちの可能性。' if fg_index <= 25 else '楽観的。過熱度を警戒。'}
+                | <b>過熱シグナル</b> | <b>{market_signal}</b>  | 無料データに基づく市場の傾き。
 </pre>
--------------------------------------
 
-<b>🎯 機会とリスク</b>
-- <b>🚨 リスクレベル:</b> <b>{risk_level}</b>。無料データ（FR/FGI）分析に基づく評価。
+<b>⚠️ リスクサマリー:</b> <b>{risk_level}</b>。無料データ（FR/FGI）分析に基づく総合評価。
 """
         
         # --- 予測結果の調整 ---
@@ -297,41 +314,53 @@ class FuturesMLBot:
              final_conclusion = f"⚠️ {ml_result} (注意: 過熱シグナルに基づく短期調整リスク)"
         
         # 推奨戦略の決定
+        # 予測が不明確 (レンジ or 不確実性が高い) の場合は待機を推奨
         if uncertainty_score > 0.40 or ml_prediction == 0:
-            strategy_advice_short = "トレードを待ち/避けることを強く推奨。レンジブレイクを待機。"
+            overall_advice = "🚨 <b>リスク回避/待機推奨</b>。市場がレンジまたは方向性が不明確です。重要なブレイクアウトを待機してください。"
             entry_long = f"ATRサポート付近 (${price - atr:.2f})"
             entry_short = f"ATRレジスタンス付近 (${price + atr:.2f})"
         else:
-             strategy_advice_short = f"ML予測に合わせた取引を検討してください: <b>{final_conclusion}</b>。"
-             entry_long = f"ATRサポート付近 (${price - atr:.2f})"
-             entry_short = f"ATRレジスタンス付近 (${price + atr:.2f})"
+             overall_advice = f"✅ <b>ML予測に合わせた取引を検討</b>: <b>{final_conclusion}</b>。リスク管理を徹底してください。"
+             # 予測が上昇/下落の場合、現在価格の0.2%程度の押し/戻しをエントリー目標とする（例）
+             entry_long = f"現在のトレンドに沿ったエントリー ({price * 0.998:.2f}付近)"
+             entry_short = f"現在のトレンドに沿ったエントリー ({price * 1.002:.2f}付近)"
         
-        # --- レポートB: 最終結論と行動計画 (HTML形式) ---
+        # --- レポートB: BOTの最終見解と具体的な行動計画 (HTML形式) ---
         report_conclusion = f"""
-<b>【最終結論と行動計画】</b>
+<b>【BOTの最終見解と行動計画】</b>
 📅 {current_time}
 
--------------------------------------
-<b>🤖 予測と全体戦略</b>
-<pre>
-項目         | 分析結果                         | 確率           | 不確実性スコア
-------------------------------------------------------------------------------------
-ML予測結論   | <b>{final_conclusion}</b>             | {max_proba*100:.1f}%          | {uncertainty_score*100:.1f}%
-</pre>
+<h3>🎯 3. BOTの最終見解（これからのBTC見通し）</h3>
+<b>ML予測結論:</b> <b>{final_conclusion}</b> (信頼度: {max_proba*100:.1f}%)
 
-<b>全体判断:</b> <b>{strategy_advice_short}</b>。無料で取得できるデータに基づき、過熱シグナルも考慮しています。
+<p>{overall_advice}</p>
+
+<table style="width:100%; text-align:left;">
+  <tr>
+    <td style="background-color:#007bff; color:white; padding:10px; border-radius:5px; width:50%;"><b>🟢 強気シナリオ (ML予測が強気の場合の指針)</b></td>
+    <td style="background-color:#dc3545; color:white; padding:10px; border-radius:5px; width:50%;"><b>🔴 弱気シナリオ (リスク管理の指針)</b></td>
+  </tr>
+  <tr>
+    <td style="padding:10px; border:1px solid #007bff; border-top:none;">
+        - <b>エントリー目標:</b> {entry_long if ml_prediction >= 0 else '---'} <br>
+        - <b>利益確定目標:</b> 直近の高値/主要レジスタンスゾーン
+    </td>
+    <td style="padding:10px; border:1px solid #dc3545; border-top:none;">
+        - <b>エントリー目標:</b> {entry_short if ml_prediction <= 0 else '---'} <br>
+        - <b>損切りライン:</b> ATRに基づく ${atr:.2f} (厳守)
+    </td>
+  </tr>
+</table>
 
 -------------------------------------
-<b>🎯 短期戦略（先物/デイトレード）</b>
-<pre>
-方向性           | エントリー目標                  | 損切り(SL)           | 利益確定目標
-------------------------------------------------------------------------------------
-{'弱気' if ml_prediction <= 0 else '強気'} | {entry_short if ml_prediction <= 0 else entry_long} | ATRに基づく ${atr:.2f} (リスク許容度) | 直近の高値/安値ゾーン
-</pre>
+<h3>📚 まとめと今後の監視ポイント</h3>
+市場は<b>「{main_cause}」</b>を背景に、<b>{market_signal}</b>の状況にあります。
+MLモデルは短期的には<b>{final_conclusion}</b>を示唆していますが、不確実性スコア<b>{uncertainty_score*100:.1f}%</b>を考慮し、ポジションサイズを調整することを推奨します。
 
--------------------------------------
-<b>📚 まとめ</b>
-CoinglassのOI/LSRの代わりに、無料公開データ（FRとF&G指数）から「市場の過熱感」を独自に分析するロジックを導入しました。これにより、外部APIエラーを回避しつつ、無料でより深いセンチメント分析を提供できます。
+<b><span style="color:#007bff;">✅ 次の4時間監視ポイント:</span></b>
+1. RSIが{'70を突破/下回る' if rsi < 70 else '70以下に冷却する'}か。
+2. FRが{'0.00015%を下回る' if fr > 0.00015 else 'さらに上昇する'}か。
+3. 価格が20-SMA (${sma:.2f}) を{'維持できる' if price > sma else '回復できる'}か。
 """
         return report_structure, report_conclusion
         
