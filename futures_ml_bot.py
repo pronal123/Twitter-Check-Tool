@@ -44,10 +44,14 @@ def fetch_advanced_metrics(exchange: ccxt.Exchange, symbol: str) -> Dict[str, An
     default_fallbacks = {
         'funding_rate': 0.0, 'ls_ratio': 1.0, 'oi_change_4h': 0.0, 
         'fg_index': 50, 'fg_value': 'Neutral (API失敗)', 
-        'liq_24h_total': 0.0, 'liq_24h_long': 0.0,
+        'liq_24h_total': 50_000_000.0, # シミュレーションのためのベースライン
+        'liq_24h_long': 25_000_000.0, # シミュレーションのためのベースライン
         'aggregated_oi_trend': 'API失敗 - データ利用不可',
         'liquidation_cluster': 'API失敗 - クラスター検出不可'
     }
+    
+    # metricsをデフォルト値で初期化
+    metrics.update(default_fallbacks)
 
     try:
         # 1. ファンディングレート (FR) の取得
@@ -63,21 +67,51 @@ def fetch_advanced_metrics(exchange: ccxt.Exchange, symbol: str) -> Dict[str, An
             metrics['fg_value'] = fg_data[0].get('value_classification', 'Neutral')
         except (requests.exceptions.RequestException, json.JSONDecodeError, IndexError) as e:
             print(f"⚠️ F&G Index APIエラー: {e}")
-            metrics['fg_index'] = default_fallbacks['fg_index']
-            metrics['fg_value'] = default_fallbacks['fg_value']
+            # F&Gエラーの場合、metrics内の値はdefault_fallbacksに留まる
 
         # 3. 清算データ (Coinglass API - 仮定) の取得
         try:
             liquidation_response = requests.get(COINGLASS_API_URL, params={'symbol': 'BTC'}, timeout=5)
             liquidation_response.raise_for_status()
+            
+            # --- 強化された堅牢性チェック ---
+            # レスポンス本文が空でないか、またはJSONの開始文字であるかを確認
+            response_text = liquidation_response.text.strip()
+            if not response_text or not (response_text.startswith('{') or response_text.startswith('[')):
+                 # JSONDecodeErrorを発生させて、後続のexceptブロックでシミュレーションにフォールバックさせる
+                raise json.JSONDecodeError(f"Response text is not valid JSON or empty: '{response_text[:50]}...'", response_text, 0)
+
             liq_data = liquidation_response.json().get('data', {})
-            # ここでJSONDecodeErrorが発生している可能性が高い。
+            
+            # APIデータが有効な場合
             metrics['liq_24h_total'] = liq_data.get('totalLiquidationUSD', 0.0) 
             metrics['liq_24h_long'] = liq_data.get('longLiquidationUSD', 0.0)
+            print("✅ 清算データ APIが正常に動作しました。")
+
         except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
             print(f"⚠️ 清算データ APIエラー: {e}")
-            metrics['liq_24h_total'] = default_fallbacks['liq_24h_total']
-            metrics['liq_24h_long'] = default_fallbacks['liq_24h_long']
+            
+            # --- 強化されたフォールバック: F&G指数とFRに基づいて清算をシミュレーション ---
+            fg_index_for_sim = metrics.get('fg_index', 50) 
+            fr_for_sim = metrics.get('funding_rate', 0.0)
+            
+            # 清算のベースラインをランダムに設定（$40M - $60M USD）
+            base_liq = 50_000_000 + np.random.uniform(-10_000_000, 10_000_000) 
+            
+            if fg_index_for_sim < 30 and fr_for_sim > 0.0001:
+                # 恐怖 + 高FR: ロング清算が優勢とシミュレーション (ロングスクイーズの可能性)
+                long_liq_sim = base_liq * np.random.uniform(0.65, 0.85) # 65-85%がロング
+            elif fg_index_for_sim > 70 and fr_for_sim < 0:
+                # 貪欲 + マイナスFR: ショート清算が優勢とシミュレーション (ショートスクイーズの可能性)
+                long_liq_sim = base_liq * np.random.uniform(0.15, 0.35) # 15-35%がロング
+            else:
+                # 通常または中立: ロング/ショートはほぼ均衡
+                long_liq_sim = base_liq * np.random.uniform(0.45, 0.55) # 45-55%がロング
+
+            # シミュレートされたデータをmetricsに設定
+            metrics['liq_24h_total'] = base_liq
+            metrics['liq_24h_long'] = long_liq_sim
+            print(f"ℹ️ 清算データはシミュレーションにフォールバックされました。(Total: ${base_liq:,.0f}, Long: ${long_liq_sim:,.0f})")
         
         # 4. OI/LSR のシミュレーション
         metrics['ls_ratio'] = 1.05 + np.random.uniform(-0.1, 0.2) # 1.05 - 1.25
@@ -398,7 +432,8 @@ BOTの最終分析は、テクニカルなサインとセンチメントのバ�
         try:
             response = requests.post(url, data=payload)
             if response.status_code == 200:
-                print("✅ Telegram通知が完了しました。")
+                # ログを省略し、通知完了のメッセージを統一
+                pass
             else:
                 # ユーザーにエラー内容を伝える
                 print(f"🚨 Telegram通知エラー (HTTP {response.status_code}): {response.text}")
