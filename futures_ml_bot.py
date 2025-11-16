@@ -197,7 +197,7 @@ class FuturesMLBot:
     def _generate_two_part_reports(self, latest_price_data: pd.Series, latest_features: pd.Series, advanced_data: Dict[str, Any], ml_prediction: int, proba: np.ndarray) -> Tuple[str, str]:
         """
         レポートを「市場構造と主要ドライバー分析」と「最終結論と行動計画」の2部構成で生成（日本語版、HTML形式）
-        -> ユーザーの要望に基づき、より「市場報告分析」に特化し、「今後の見通し」を強調するよう修正。
+        -> <p>タグを削除し、\n\n に置換
         """
         # 価格データとテクニカル指標 (実践データ)
         price = latest_price_data['Close']
@@ -345,7 +345,7 @@ ATR (ボラティリティ) | ${atr:.2f}            | 過去14期間の平均変
 <b>🎯 3. BOTの最終見解（これからのBTC見通し）</b>
 <b>ML予測結論:</b> <b>{final_conclusion}</b> (信頼度: {max_proba*100:.1f}%)
 
-<p>{overall_advice}</p>
+{overall_advice}
 
 {strategy_block}
 
