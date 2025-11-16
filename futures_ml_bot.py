@@ -1,4 +1,4 @@
-# futures_ml_bot.py (Coinglass無料アクセス試行版 - 日本語版)
+# futures_ml_bot.py (無料データに基づく過熱シグナル分析版 - 日本語版)
 
 import os
 import ccxt
@@ -14,7 +14,6 @@ from sklearn.ensemble import RandomForestClassifier
 from typing import Tuple, Dict, Any
 
 # --- 1. 環境変数設定 ---
-# APIキーはMEXC/Telegram用のみ必要です。Coinglassのキーは不要です。
 MEXC_API_KEY = os.environ.get('MEXC_API_KEY')
 MEXC_SECRET = os.environ.get('MEXC_SECRET')
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
@@ -24,35 +23,31 @@ FUTURES_SYMBOL = 'BTC/USDT'
 TIMEFRAME = '4h'
 MODEL_FILENAME = 'btc_futures_ml_model.joblib'
 
-# 外部APIエンドポイント (公開されている可能性のある非認証URLを試行)
+# 外部APIエンドポイント (現在動作確認済みで無料のAPIのみを使用)
 FG_INDEX_API_URL = 'https://api.alternative.me/fng/?limit=1'
 
-# 🚨 Coinglass公開エンドポイント (無料利用を試みるURL - 変更リスクあり)
-# 市場全体のOIデータ取得を試行
-COINGLASS_OI_API_URL = 'https://coinglass.com/api/futures/openInterest?symbol=BTC&interval=4h&exchange=binance,bybit,okx' 
-# 市場全体のLSRデータ取得を試行
-COINGLASS_LSR_API_URL = 'https://coinglass.com/api/longShort?symbol=BTC&interval=4h&exchange=binance,bybit,okx' 
+# Coinglassへの直接アクセスはエラーとなるため、このバージョンでは削除します。
 
 # --- 2. Advanced Custom Data Fetching Function ---
 def fetch_advanced_metrics(exchange: ccxt.Exchange, symbol: str) -> Dict[str, Any]:
     """
-    FR, Fear & Greed Index, および市場全体の建玉 (OI) などの公開された実践データを取得します。
-    LSR/OIはCoinglassの公開エンドポイントから無料で取得を試みます。
+    FR, Fear & Greed Indexなど、確実に取得できる公開実践データのみを取得します。
+    高度な集計データは有料APIが必要なため、フォールバック値を設定します。
     """
     metrics = {}
     
-    # 取得失敗時のフォールバック値
+    # 取得失敗時、および有料APIが必要な場合のフォールバック値
     default_fallbacks = {
         'funding_rate': 0.0, 
         'fg_index': 50, 
         'fg_value': 'Neutral (API失敗)',
-        'oi_current_usd': 0.0,          # 市場全体の建玉 (USD)
-        'oi_change_4h': 0.0,            # 市場全体の建玉変化率 (4h)
-        # 複雑な認証が必要なデータには「無料アクセス試行失敗」を報告
-        'ls_ratio': "無料アクセス試行失敗",
-        'liq_24h_long': "清算額取得未実装",
-        'aggregated_oi_trend': 'データ取得試行失敗',
-        'liquidation_cluster': 'データ取得試行失敗'
+        # 🚨 Coinglassの集計データは無料で取得できないため、ステータスを報告します。
+        'oi_current_usd': '取得不可 (有料API)',          
+        'oi_change_4h': '取得不可 (有料API)',            
+        'ls_ratio': "取得不可 (有料API)",
+        'liq_24h_long': "取得不可 (有料API)",
+        'aggregated_oi_trend': '取得不可 (有料API)',
+        'liquidation_cluster': '取得不可 (有料API)'
     }
     metrics.update(default_fallbacks)
 
@@ -71,48 +66,7 @@ def fetch_advanced_metrics(exchange: ccxt.Exchange, symbol: str) -> Dict[str, An
         except Exception as e:
             print(f"⚠️ F&G Index APIエラー: {e}")
             
-        # 3. Aggregated Market Open Interest (OI) の取得 (Coinglass公開アクセス試行)
-        try:
-            oi_response = requests.get(COINGLASS_OI_API_URL, timeout=10)
-            oi_response.raise_for_status()
-            oi_data = oi_response.json()
-            
-            # --- API応答処理ロジックの例 ---
-            if oi_data and 'data' in oi_data and len(oi_data['data']) >= 2:
-                latest_oi = oi_data['data'][-1].get('openInterest', 0.0)
-                previous_oi = oi_data['data'][-2].get('openInterest', 0.0)
-                
-                metrics['oi_current_usd'] = latest_oi
-                if previous_oi > 0:
-                    metrics['oi_change_4h'] = (latest_oi - previous_oi) / previous_oi
-                
-                metrics['aggregated_oi_trend'] = 'OI Increased' if metrics['oi_change_4h'] > 0.005 else 'OI Decreased'
-            
-        except Exception as e:
-            print(f"🚨 Coinglass OI APIエラー (無料アクセス失敗): {e} (フォールバック値を使用)")
-            
-        # 4. Long/Short Ratio (LSR) の取得 (Coinglass公開アクセス試行)
-        try:
-            lsr_response = requests.get(COINGLASS_LSR_API_URL, timeout=10)
-            lsr_response.raise_for_status()
-            lsr_data = lsr_response.json()
-            
-            # 🚨 LSRデータ解析ロジックの例 (応答構造に合わせてユーザーが調整が必要)
-            if lsr_data and 'data' in lsr_data and len(lsr_data['data']) > 0:
-                # 最新のLSR値を取得すると仮定
-                latest_lsr = lsr_data['data'][-1].get('longShortRatio', 'データ解析失敗')
-                # 値が数値であることを確認し、文字列で表示するために丸めます
-                if isinstance(latest_lsr, (int, float)):
-                    metrics['ls_ratio'] = f"{latest_lsr:.2f}" 
-                else:
-                    metrics['ls_ratio'] = latest_lsr
-            
-        except Exception as e:
-            print(f"🚨 Coinglass LSR APIエラー (無料アクセス失敗): {e}")
-        
-        # 5. 🚨 Liquidation Cluster (清算ヒートマップ) - これは通常、無料では提供されていません
-        
-        print("ℹ️ 実践データ取得プロセスを完了しました。LSR/OIは無料公開エンドポイントを試行しました。")
+        print("ℹ️ 実践データ取得プロセスを完了しました。高度な集計データはスキップされています。")
         return metrics
     
     except Exception as e:
@@ -258,42 +212,57 @@ class FuturesMLBot:
         fg_index = advanced_data.get('fg_index', 50)
         fg_value = advanced_data.get('fg_value', 'Neutral')
         
-        # 🚨 Coinglass 公開アクセス試行データ
-        oi_usd = advanced_data.get('oi_current_usd', 0.0)
-        oi_chg = advanced_data.get('oi_change_4h', 0.0)
-        oi_trend = advanced_data.get('aggregated_oi_trend', 'データ取得試行失敗')
-        ls_ratio = advanced_data.get('ls_ratio', '無料アクセス試行失敗') # 無料アクセス試行の結果
-        
-        # 🚨 未実装の複雑な実践データ
-        liq_long = advanced_data.get('liq_24h_long', '清算額取得未実装')
-        liq_cluster_info = advanced_data.get('liquidation_cluster', 'データ取得試行失敗')
-        
+        # 🚨 有料APIが必要な集計データ
+        ls_ratio = advanced_data.get('ls_ratio', '取得不可 (有料API)')
+        oi_trend = advanced_data.get('aggregated_oi_trend', '取得不可 (有料API)')
+        liq_long = advanced_data.get('liq_24h_long', '取得不可 (有料API)')
+        liq_cluster_info = advanced_data.get('liquidation_cluster', '取得不可 (有料API)')
+
+        # ----------------------------------------------------------------
+        # 🆕 無料データに基づく「市場過熱シグナル」のロジック (OI/LSRの代わり)
+        # ----------------------------------------------------------------
+        overheat_score = 0
+        overheat_detail = "中立"
+        risk_level = "中🔴"
+        market_signal = "中立/テクニカル主導"
+
+        # 1. 貪欲シグナル (ロング過熱の可能性)
+        if fg_index >= 75:
+            overheat_score += 1
+            overheat_detail = "極端な貪欲"
+        # 2. FRシグナル (ロングのコスト高・調整リスク)
+        if fr >= 0.00015: # 0.015% 以上で高水準と見なす
+            overheat_score += 1
+            if overheat_detail == "中立":
+                overheat_detail = "高いFR"
+            else:
+                overheat_detail += " & 高いFR"
+
+        if overheat_score >= 2:
+            market_signal = "🚨 極端なロング過熱リスク（調整警戒）"
+            risk_level = "高🔴🔴"
+            main_cause = "無料データ分析に基づく過度な楽観と調整リスク"
+        elif overheat_score == 1:
+             market_signal = "⚠️ 過熱の兆候（FRまたはFGI）"
+             risk_level = "中高🔴"
+             main_cause = "無料データ分析に基づくセンチメントの傾き"
+        elif fg_index <= 25:
+             market_signal = "🟢 極度の恐怖（ショート解消または底打ちの可能性）"
+             risk_level = "中高🔴"
+             main_cause = "無料データ分析に基づく極端な恐怖によるポジション調整"
+        else:
+             main_cause = "テクニカル環境と市場センチメント"
+        # ----------------------------------------------------------------
+
         current_time = datetime.now(timezone.utc).astimezone(None).strftime('%Y-%m-%d %H:%M JST')
         
         max_proba = proba[np.argmax(proba)]
         uncertainty_score = 1.0 - max_proba
         
-        # 主要な原因とリスクレベルの決定ロジック (実践データに依存)
-        main_cause = "テクニカル環境と市場センチメント"
-        risk_level = "中🔴"
-        
-        # LSRが取得できている場合、分析に組み込む
-        if isinstance(ls_ratio, str) and ls_ratio.replace('.', '', 1).isdigit():
-             ls_ratio_val = float(ls_ratio)
-             if ls_ratio_val > 1.10 and fr > 0.0001:
-                 main_cause = "市場全体でのロング過熱と需給の不均衡"
-                 risk_level = "高🔴🔴"
-        elif oi_chg < -0.01 and fg_index < 30: 
-             main_cause = "恐怖によるポジション解消とボラティリティの低下"
-             risk_level = "中高🔴"
-        
-        if uncertainty_score > 0.40:
-             risk_level = "高🔴🔴"
-             
         
         # --- レポートA: 市場構造と主要ドライバー分析 (HTML形式) ---
         report_structure = f"""
-<b>【BTC 市場ドライバー分析 - 実践数値に基づく】</b>
+<b>【BTC 市場ドライバー分析 - 無料データに基づく】</b>
 📅 {current_time}
 
 📌 <b>主要ポイント</b>
@@ -302,32 +271,30 @@ class FuturesMLBot:
 <b>テクニカル環境:</b> BTC価格 <b>${price:.2f}</b> は、20日SMA（${sma:.2f}）を {'🟢 上回っています' if price > sma else '🔴 下回っています'}。短期トレンドは {'強気' if price > sma else '弱気'} です。
 
 -------------------------------------
-<b>📉 市場ドライバーとリスク分析 (実践データ)</b>
+<b>📉 無料データに基づくセンチメント分析 (OI/LSRの代わり)</b>
 <pre>
 カテゴリ        | 指標         | 現在値/ステータス     | 分析/示唆
 --------------------------------------------------------------------------------
 需給・流動性    | FR           | {fr*100:.4f}%             | {'🚨 ロングのコスト高。スクイーズリスクあり。' if fr > 0.00015 else '中立。'}
-                | OI総量(集計)| ${oi_usd:,.0f}       | {oi_trend}の傾向。市場への資金流入/流出を示す。
-                | OI変化率(4H集計)| {oi_chg*100:.2f}%            | {'🟢 増加。トレンド継続の勢い。' if oi_chg > 0.01 else '中立/減少。'}
-センチメント    | F&G指数      | {fg_index} ({fg_value}) | {'極度の恐怖。逆張り機会か、底値割れの警告。' if fg_index <= 20 else '楽観的。短期的な過熱の可能性。'}
-                | L/S比率(集計)| {ls_ratio}           | Coinglass無料アクセス試行結果。
-                | 24H清算額(集計)| {liq_long}           | ⚠️ <b>高度なデータは通常有料/未実装。</b>
-ボラティリティ  | ATR          | ${atr:.2f}             | {(atr / price) * 100:.2f}% (市場ボラティリティの目安)。
+                | F&G指数      | {fg_index} ({fg_value}) | {'極度の恐怖。逆張り機会か、底値割れの警告。' if fg_index <= 20 else '楽観的。短期的な過熱の可能性。'}
+                | <b>過熱シグナル</b> | <b>{market_signal}</b>  | FRとF&G指数を組み合わせた無料分析。
+--------------------------------------------------------------------------------
+<b>⚠️ 有料APIが必要な集計データ</b>
+                | L/S比率(集計)| {ls_ratio}           | 取得不可。
+                | OI総量(集計)| 取得不可             | {oi_trend}
 </pre>
 -------------------------------------
 
-<b>📊 市場集計データ洞察（Coinglass等から取得）</b>
-- <b>総建玉トレンド:</b> {oi_trend}
-- <b>清算ヒートマップ:</b> {liq_cluster_info}
-
 <b>🎯 機会とリスク</b>
-- <b>🚨 リスクレベル:</b> <b>{risk_level}</b>。公開データに基づき、市場ボラティリティに警戒してください。
+- <b>🚨 リスクレベル:</b> <b>{risk_level}</b>。無料データ（FR/FGI）分析に基づく評価。
 """
         
         # --- 予測結果の調整 ---
         final_conclusion = ml_result
-        if (ml_result == "📈 上昇" and (isinstance(ls_ratio, str) and ls_ratio.replace('.', '', 1).isdigit() and float(ls_ratio) > 1.15)):
-             final_conclusion = f"⚠️ {ml_result} (注意: LSRに基づく短期調整リスク)"
+        
+        # 予測が上昇だが、過熱シグナルが強い場合、調整リスクを警告
+        if ml_prediction == 1 and overheat_score >= 1:
+             final_conclusion = f"⚠️ {ml_result} (注意: 過熱シグナルに基づく短期調整リスク)"
         
         # 推奨戦略の決定
         if uncertainty_score > 0.40 or ml_prediction == 0:
@@ -352,7 +319,7 @@ class FuturesMLBot:
 ML予測結論   | <b>{final_conclusion}</b>             | {max_proba*100:.1f}%          | {uncertainty_score*100:.1f}%
 </pre>
 
-<b>全体判断:</b> <b>{strategy_advice_short}</b>。公開された実践データに基づいています。
+<b>全体判断:</b> <b>{strategy_advice_short}</b>。無料で取得できるデータに基づき、過熱シグナルも考慮しています。
 
 -------------------------------------
 <b>🎯 短期戦略（先物/デイトレード）</b>
@@ -363,11 +330,8 @@ ML予測結論   | <b>{final_conclusion}</b>             | {max_proba*100:.1f}% 
 </pre>
 
 -------------------------------------
-<b>🚨 重要な注意事項</b>
-本BOTは、**Coinglassの無料公開エンドポイント**からOIとLSRデータを取得しようと試みています。この方法は、APIキーが不要ですが、**APIの安定性は保証されません**。データ取得に失敗した場合は、フォールバック値（例: '無料アクセス試行失敗'）が表示されます。
-
-📚 <b>まとめ</b>
-無料の公開データに切り替えることで、外部APIキーなしで市場センチメントを分析できるようになりました。
+<b>📚 まとめ</b>
+CoinglassのOI/LSRの代わりに、無料公開データ（FRとF&G指数）から「市場の過熱感」を独自に分析するロジックを導入しました。これにより、外部APIエラーを回避しつつ、無料でより深いセンチメント分析を提供できます。
 """
         return report_structure, report_conclusion
         
