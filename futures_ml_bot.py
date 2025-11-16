@@ -1,4 +1,4 @@
-# futures_ml_bot.py (1時間足に最適化された最高峰の市場分析レポート生成バージョン)
+# futures_ml_bot.py (1時間足に最適化された最高峰の市場分析レポート生成バージョン - 堅牢性向上)
 
 import os
 import ccxt
@@ -20,7 +20,6 @@ TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
 
 FUTURES_SYMBOL = 'BTC/USDT'
-# 1時間ごとのレポートに対応するため、時間足を '1h' に設定
 TIMEFRAME = '1h' 
 MODEL_FILENAME = 'btc_futures_ml_model.joblib'
 
@@ -39,6 +38,7 @@ def fetch_advanced_metrics(exchange: ccxt.Exchange, symbol: str) -> Dict[str, An
     metrics.update(default_fallbacks)
 
     try:
+        # この関数は認証済みインスタンスを使用し、FRなどを取得します
         ticker = exchange.fetch_ticker(symbol)
         metrics['funding_rate'] = float(ticker.get('fundingRate', 0) or 0)
         
@@ -54,31 +54,46 @@ def fetch_advanced_metrics(exchange: ccxt.Exchange, symbol: str) -> Dict[str, An
         return metrics
     
     except Exception as e:
+        # APIキー認証失敗時でも、公開情報（F&G Index）は取得を試みる
         print(f"🚨 主要データ取得エラー (CCXT/その他): {e}")
+        try:
+            fg_response = requests.get(FG_INDEX_API_URL, timeout=5)
+            fg_response.raise_for_status()
+            fg_data = fg_response.json().get('data', [{}])
+            default_fallbacks['fg_index'] = int(fg_data[0].get('value', 50))
+            default_fallbacks['fg_value'] = fg_data[0].get('value_classification', 'Neutral')
+        except:
+             pass # F&G Indexも失敗した場合はそのままフォールバック
         return default_fallbacks
 
 
 # --- 3. メインBOTクラス ---
 class FuturesMLBot:
     def __init__(self):
-        if not all([MEXC_API_KEY, MEXC_SECRET]):
-             raise ValueError("APIキーが設定されていません。環境変数を確認してください。")
-             
+        # 認証済みインスタンス (トレード操作用 - APIキーが正しく設定されていない場合、認証が必要なAPIコールは失敗します)
         self.exchange = ccxt.mexc({
-            'apiKey': MEXC_API_KEY,
-            'secret': MEXC_SECRET,
+            'apiKey': MEXC_API_KEY if MEXC_API_KEY else 'dummy',
+            'secret': MEXC_SECRET if MEXC_SECRET else 'dummy',
             'options': {'defaultType': 'future'},
             'enableRateLimit': True,
         })
+        
+        # 🆕 公開データ取得用インスタンス (OHLCVデータは公開されているため、APIキーなしで初期化)
+        self.public_exchange = ccxt.mexc({
+            'options': {'defaultType': 'future'},
+            'enableRateLimit': True,
+        })
+        
         self.target_threshold = 0.0005 
         self.prediction_period = 1 
         self.feature_cols = [] 
 
     # --- (A) データ取得 (OHLCV) ---
     def fetch_ohlcv_data(self, limit: int = 100, timeframe: str = TIMEFRAME) -> pd.DataFrame:
-        """OHLCVデータを取得"""
+        """OHLCVデータを公開用インスタンスから取得します。"""
         try:
-            ohlcv = self.exchange.fetch_ohlcv(FUTURES_SYMBOL, timeframe, limit=limit)
+            # 🆕 公開用インスタンス (self.public_exchange) を使用し、403エラーを回避
+            ohlcv = self.public_exchange.fetch_ohlcv(FUTURES_SYMBOL, timeframe, limit=limit)
             if not ohlcv:
                 print("🚨 OHLCVデータが空です。")
                 return pd.DataFrame()
@@ -87,16 +102,15 @@ class FuturesMLBot:
             df.set_index('timestamp', inplace=True)
             return df
         except Exception as e:
-            print(f"🚨 OHLCVデータ取得エラー: {e}")
+            print(f"🚨 OHLCVデータ取得エラー (公開APIを使用中): {e}")
             return pd.DataFrame()
 
-    # --- (B) 特徴量エンジニアリング (変更なし) ---
+    # --- (B), (C), (D) 特徴量作成、学習、予測 (変更なし) ---
     def create_ml_features(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series]:
         """実践的なテクニカル特徴量を作成"""
         if df.empty:
             return pd.DataFrame(), pd.Series(dtype=int)
 
-        # 1時間足に対応するため、特徴量はそのまま維持
         df['SMA'] = ta.sma(df['Close'], length=20)
         df['RSI'] = ta.rsi(df['Close'], length=14)
         df['MACD_H'] = ta.macd(df['Close'])['MACDh_12_26_9']
@@ -125,10 +139,8 @@ class FuturesMLBot:
             
         return df[self.feature_cols], df['Target']
 
-    # --- (C) モデルの学習と保存 (変更なし) ---
     def train_and_save_model(self, df_long_term: pd.DataFrame) -> bool:
         print("🧠 モデルの再学習タスクを開始...")
-        # 1時間足のデータで学習を行う
         X_train, Y_train = self.create_ml_features(df_long_term.copy())
         
         if X_train.empty:
@@ -142,7 +154,6 @@ class FuturesMLBot:
         print("✅ モデルの再学習が完了し、ファイルに保存されました。")
         return True
 
-    # --- (D) リアルタイム予測と通知 ---
     def predict_and_report(self, df_latest: pd.DataFrame, advanced_data: Dict[str, Any]) -> bool:
         try:
             model = joblib.load(MODEL_FILENAME)
@@ -175,11 +186,7 @@ class FuturesMLBot:
         self.send_telegram_notification(full_report)
         
         return True
-
-    # ----------------------------------------------------------------
-    # 🌟 プレミアムレポートのためのヘルパー関数 🌟
-    # ----------------------------------------------------------------
-
+    # --- プレミアムレポートのためのヘルパー関数 (変更なし) ---
     def _determine_market_regime(self, price: float, sma: float, atr: float, high: float, low: float) -> Tuple[str, str]:
         """SMAとATRを用いて市場構造（レジーム）を判断する"""
         
@@ -230,56 +237,39 @@ class FuturesMLBot:
 
         return sentiment_summary, core_risks, risk_color
         
-    # --- (E) プレミアムレポート生成関数 ---
     def _generate_premium_report(self, latest_price_data: pd.Series, latest_features: pd.Series, advanced_data: Dict[str, Any], ml_prediction: int, proba: np.ndarray) -> str:
         """ML予測と実データを統合し、最高峰の分析レポートを生成する。"""
         
-        # データ抽出
         price = latest_price_data['Close']
         high = latest_price_data['High']
         low = latest_price_data['Low']
         sma = latest_features.get('SMA', price)
         atr = latest_features.get('ATR', price * 0.01)
         
-        # 予測と信頼度
         pred_map = {-1: "📉 下落", 0: "↔️ レンジ", 1: "📈 上昇"}
         ml_result = pred_map.get(ml_prediction, "不明")
         max_proba = proba[np.argmax(proba)]
         
-        # センチメントデータ
         fg_index = advanced_data.get('fg_index', 50)
         fr = advanced_data.get('funding_rate', 0)
         
         current_time = datetime.now(timezone.utc).astimezone(None).strftime('%Y-%m-%d %H:%M JST')
-
-        # ----------------------------------------------------------------
-        # 1. ヘルパー関数による高度分析の実行
-        # ----------------------------------------------------------------
         
         regime_status, regime_emoji = self._determine_market_regime(price, sma, atr, high, low)
         sentiment_summary, core_risks, risk_color = self._analyze_macro_sentiment(fg_index, fr)
         
-        # ATRに基づくレベル (1時間足のため、よりタイト)
         R1 = price + atr
         S1 = price - atr
         R2 = price + (atr * 2)
         S2 = price - (atr * 2)
         
-        # 予測の解釈
         ml_interpretation = f"MLモデルは次の1時間で<b>{ml_result}</b>を予測しています (信頼度: {max_proba*100:.1f}%)。"
         if ml_prediction == 0 and max_proba < 0.4:
             ml_interpretation += "MLの判断が分かれており、不確実性が高いため、レンジ内での取引を推奨します。"
 
-
-        # ----------------------------------------------------------------
-        # 2. レポート構造の生成
-        # ----------------------------------------------------------------
-        
-        # --- 核心理由セクション ---
         core_reason_list = [f"<b>ML予測:</b> {ml_interpretation}"]
         core_reason_list.extend(core_risks)
         
-        # テクニカルな核心理由
         if regime_status.startswith("短期上昇トレンド"):
             core_reason_list.append(f"<b>テクニカル要因:</b> 価格は20-SMA (${sma:.2f}) を上回り、短期モメンタムは継続中。")
         elif regime_status.startswith("短期下降トレンド"):
@@ -287,43 +277,32 @@ class FuturesMLBot:
         else:
              core_reason_list.append(f"<b>テクニカル要因:</b> {regime_status}。ボラティリティ (${atr:.2f}) が収束/拡散の兆候。")
 
-
-        # --- チャンスセクション ---
         chance_list = [
             f"<b>ML予測との一致:</b> {ml_result}の方向にエントリーする場合、信頼度 ({max_proba*100:.1f}%) を裏付けとして活用可能。",
             f"<b>市場心理の逆張り:</b> F&G指数が<b>{fg_index}</b> ({advanced_data['fg_value']}) の場合、過去の統計では強力な逆張りの買い場を提供する傾向がある。",
         ]
         
-        # --- リスクセクション ---
         risk_list = [
             f"<b>{risk_color} 総合リスク警告:</b> 市場構造は現在 <b>{regime_status}</b> であり、FRやFGIに基づくセンチメントは {sentiment_summary} です。",
             f"<b>ボラティリティリスク (ATR):</b> 過去14時間の平均変動幅は <b>${atr:.2f}</b> です。ストップロスは最低この値幅を考慮に入れる必要があります。",
             f"<b>重要レベル割れ:</b> 2-ATRサポートS2 (${S2:.2f}) を割り込んだ場合、次の主要な節目まで急落するリスクが高い。"
         ]
         
-        # --- 行動計画セクション ---
-        
-        # ターゲット価格と戦略の提案
-        if ml_prediction == 1 or fg_index <= 30: # 上昇予測 or 極度の恐怖（逆張り買い）
+        if ml_prediction == 1 or fg_index <= 30:
             strategy_title = "📈 <b>推奨戦略: 短期ロング/押し目買い</b>"
             entry_zone = f"<b>S1: ${S1:.2f}〜現在価格</b>（市場の弱さを利用したエントリー）"
             sl_level = f"<b>S2: ${S2:.2f}</b>（ここを割ると短期トレンド転換の可能性）"
             tp_targets = f"R1: <b>${R1:.2f}</b> (50%)、R2: <b>${R2:.2f}</b> (30%)、R2+ATR: <b>${R2+atr:.2f}</b> (20%)"
-        elif ml_prediction == -1 or fr > 0.00015: # 下落予測 or 高FR（戻り売り/ショート）
+        elif ml_prediction == -1 or fr > 0.00015:
             strategy_title = "📉 <b>推奨戦略: 短期ショート/戻り売り</b>"
             entry_zone = f"<b>現在価格〜R1: ${R1:.2f}</b>（一時的な戻りを狙った売り）"
             sl_level = f"<b>R2: ${R2:.2f}</b>（ここを突破するとショートスクイーズの可能性）"
             tp_targets = f"S1: <b>${S1:.2f}</b> (50%)、S2: <b>${S2:.2f}</b> (30%)、S2-ATR: <b>${S2-atr:.2f}</b> (20%)"
-        else: # レンジ予測
+        else:
             strategy_title = "⚖️ <b>推奨戦略: レンジ内取引/ブレイクアウト待機</b>"
             entry_zone = f"<b>R1/S1 ({R1:.2f} / {S1:.2f})</b> の極値"
             sl_level = f"エントリーポイントから <b>ATRの0.5倍</b> の外側"
             tp_targets = f"<b>R1/S1</b>の反対側の極値"
-        
-        
-        # ----------------------------------------------------------------
-        # 3. 最終HTMLレポートの組み立て
-        # ----------------------------------------------------------------
         
         report = f"""
 <b>【👑 BTC 1時間足 最新状況レポート 👑】</b>
