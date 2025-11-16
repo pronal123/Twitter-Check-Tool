@@ -197,7 +197,7 @@ class FuturesMLBot:
     def _generate_two_part_reports(self, latest_price_data: pd.Series, latest_features: pd.Series, advanced_data: Dict[str, Any], ml_prediction: int, proba: np.ndarray) -> Tuple[str, str]:
         """
         レポートを「市場構造と主要ドライバー分析」と「最終結論と行動計画」の2部構成で生成（日本語版、HTML形式）
-        -> <p>タグを削除し、\n\n に置換
+        -> <p>タグ、span styleを削除し、可視性と分析内容を強化
         """
         # 価格データとテクニカル指標 (実践データ)
         price = latest_price_data['Close']
@@ -216,6 +216,7 @@ class FuturesMLBot:
         fg_value = advanced_data.get('fg_value', 'Neutral')
         
         # 🚨 有料APIが必要な集計データ
+        # このバージョンでは使用しないが、レポートのフォールバックとして残す
         ls_ratio = advanced_data.get('ls_ratio', '取得不可 (有料API)')
         oi_trend = advanced_data.get('aggregated_oi_trend', '取得不可 (有料API)')
         liq_long = advanced_data.get('liq_24h_long', '取得不可 (有料API)')
@@ -243,13 +244,19 @@ class FuturesMLBot:
             rsi_comment = "売られすぎ水準 (反発期待)"
             
         macd_comment = "勢いなし"
+        macd_momentum = ""
         # MACDがマイナスからプラスに転換した場合 (ゴールデンクロスに近い状態)
         if macd_h > 0 and latest_features.get('MACD_H_L1', 0) < 0:
-            macd_comment = "📈 ゴールデンクロス発生の兆候（強い強気シグナル）"
+            macd_comment = "ゴールデンクロス発生の兆候"
+            macd_momentum = "強い強気シグナル"
         elif macd_h > 0:
             macd_comment = "強気モメンタム継続"
+            macd_momentum = "上昇トレンドを示唆"
         elif macd_h < 0:
             macd_comment = "弱気モメンタム継続"
+            macd_momentum = "下降圧力を示唆"
+        else:
+            macd_momentum = "レンジ相場"
 
 
         if overheat_score >= 2:
@@ -277,34 +284,33 @@ class FuturesMLBot:
         # --- レポートA: BTC市場 現状と短期見通し 分析 (HTML形式) ---
         report_structure = f"""
 <b>【BTC市場 現状と短期見通し 分析レポート】</b>
-📅 {current_time} | 4h足分析
+📅 {current_time} | <b>{TIMEFRAME}足分析</b>
 
 <b>🔍 1. 市場構造の現状把握</b>
-
-📌 <b>現在のドライバー:</b> <b>{main_cause}</b> が市場の方向性を主導しています。
+📌 <b>主要ドライバー:</b> <b>{main_cause}</b>
 📌 <b>現在価格:</b> <b>${price:.2f}</b>
 
 -------------------------------------
-<b>📊 テクニカル分析（短期トレンド）</b>
+<b>📊 テクニカル分析 詳細</b>
 <pre>
 指標           | 現在値/ステータス     | 洞察
 --------------------------------------------------------------------------------
-20-SMA         | ${sma:.2f}            | 価格はSMAを{'🟢 上回る' if price > sma else '🔴 下回る'}。短期トレンドは{'強気' if price > sma else '弱気'}。
-RSI (14)       | {rsi:.2f}              | <b>{rsi_comment}</b>。
-MACD Hist.     | {macd_h:.2f}           | <b>{macd_comment}</b>。
-ATR (ボラティリティ) | ${atr:.2f}            | 過去14期間の平均変動幅。現在価格の<b>{atr/price*100:.2f}%</b>。
+20-SMA         | ${sma:.2f}            | 価格はSMAを{'🟢 上回る' if price > sma else '🔴 下回る'}。短期トレンドは{'<b>強気</b>' if price > sma else '<b>弱気</b>'}。
+RSI (14)       | {rsi:.2f}              | <b>{rsi_comment}</b>
+MACD Hist.     | {macd_h:.2f}           | <b>{macd_comment}</b> ({macd_momentum})
+ATR (ボラティリティ) | ${atr:.2f}            | 平均変動幅: 現在価格の<b>{atr/price*100:.2f}%</b>
 </pre>
 -------------------------------------
-<b>📈 2. センチメントと過熱シグナル（OI/LSR代替分析）</b>
+<b>📈 2. センチメントと過熱シグナル</b>
 <pre>
-カテゴリ        | 指標         | 現在値/ステータス     | 分析/示唆
+カテゴリ        | 指標         | 現在値/ステータス     | 示唆
 --------------------------------------------------------------------------------
-需給・流動性    | FR           | {fr*100:.4f}%             | {'🚨 ロングのコストが高騰。調整圧力に注意。' if fr > 0.00015 else '中立水準。'}
-                | F&G指数      | {fg_index} ({fg_value}) | {'極度の恐怖。底打ちの可能性。' if fg_index <= 25 else '楽観的。過熱度を警戒。'}
-                | <b>過熱シグナル</b> | <b>{market_signal}</b>  | 無料データに基づく市場の傾き。
+需給・流動性    | FR           | {fr*100:.4f}%             | {'🚨 ロングのコスト高騰。調整圧力警戒。' if fr > 0.00015 else '中立水準。'}
+センチメント    | F&G指数      | {fg_index} ({fg_value}) | {'極度の恐怖。底打ち期待。' if fg_index <= 25 else '楽観的。過熱度に注意。'}
+<b>総合評価</b> | <b>過熱シグナル</b> | <b>{market_signal}</b>  | 無料データに基づく市場の傾き。
 </pre>
 
-<b>⚠️ リスクサマリー:</b> <b>{risk_level}</b>。無料データ（FR/FGI）分析に基づく総合評価。
+<b>⚠️ リスクサマリー:</b> <b>{risk_level}</b>。FR/FGI分析に基づく総合リスク評価です。
 """
         
         # --- 予測結果の調整 ---
@@ -317,47 +323,46 @@ ATR (ボラティリティ) | ${atr:.2f}            | 過去14期間の平均変
         # 推奨戦略の決定
         # 予測が不明確 (レンジ or 不確実性が高い) の場合は待機を推奨
         if uncertainty_score > 0.40 or ml_prediction == 0:
-            overall_advice = "🚨 <b>リスク回避/待機推奨</b>。市場がレンジまたは方向性が不明確です。重要なブレイクアウトを待機してください。"
-            entry_long = f"ATRサポート付近 (${price - atr:.2f})"
-            entry_short = f"ATRレジスタンス付近 (${price + atr:.2f})"
+            overall_advice = "🚨 <b>リスク回避/待機推奨</b>\n市場がレンジまたは方向性が不明確です。重要なブレイクアウトを待機してください。"
+            entry_long = f"<b>守備的エントリー:</b> ATRサポート付近 (${price - atr:.2f}付近)"
+            entry_short = f"<b>守備的エントリー:</b> ATRレジスタンス付近 (${price + atr:.2f}付近)"
         else:
-             overall_advice = f"✅ <b>ML予測に合わせた取引を検討</b>: <b>{final_conclusion}</b>。リスク管理を徹底してください。"
+             overall_advice = f"✅ <b>ML予測に合わせた取引を検討</b>\n結論: <b>{final_conclusion}</b>。リスク管理を徹底してください。"
              # 予測が上昇/下落の場合、現在価格の0.2%程度の押し/戻しをエントリー目標とする（例）
-             entry_long = f"現在のトレンドに沿ったエントリー ({price * 0.998:.2f}付近)"
-             entry_short = f"現在のトレンドに沿ったエントリー ({price * 1.002:.2f}付近)"
-        
-        # HTMLテーブルを、Telegramで確実に表示できる構造化テキストに置き換える
-        strategy_block = f"""
-<b>🟢 強気シナリオ (ML予測が強気の場合の指針)</b>
-  - <b>エントリー目標:</b> {entry_long if ml_prediction >= 0 else '---'}
-  - <b>利益確定目標:</b> 直近の高値/主要レジスタンスゾーン
+             entry_long = f"<b>トレンドフォロー:</b> 現在価格の-0.2%付近 (${price * 0.998:.2f}付近)"
+             entry_short = f"<b>トレンドフォロー:</b> 現在価格の+0.2%付近 (${price * 1.002:.2f}付近)"
 
-<b>🔴 弱気シナリオ (リスク管理の指針)</b>
-  - <b>エントリー目標:</b> {entry_short if ml_prediction <= 0 else '---'}
-  - <b>損切りライン:</b> ATRに基づく ${atr:.2f} (厳守)
-"""
+        # ----------------------------------------------------------------
         
         # --- レポートB: BOTの最終見解と具体的な行動計画 (HTML形式) ---
         report_conclusion = f"""
 <b>【BOTの最終見解と行動計画】</b>
 📅 {current_time}
 
-<b>🎯 3. BOTの最終見解（これからのBTC見通し）</b>
-<b>ML予測結論:</b> <b>{final_conclusion}</b> (信頼度: {max_proba*100:.1f}%)
+<b>🎯 3. BOTの最終見解と信頼度</b>
+ML予測結論: <b>{final_conclusion}</b> (信頼度: {max_proba*100:.1f}%)
 
 {overall_advice}
+-------------------------------------
+<b>📈 強気/弱気 シナリオ詳細</b>
 
-{strategy_block}
+🟢 <b>ロング戦略の指針:</b>
+  - エントリー目標: {entry_long if ml_prediction >= 0 else '---'}
+  - 利益確定: 直近の高値/主要レジスタンスゾーン
+  
+🔴 <b>ショート戦略の指針:</b>
+  - エントリー目標: {entry_short if ml_prediction <= 0 else '---'}
+  - 損切りライン: ATRに基づく ${atr:.2f} (<b>厳守</b>)
 
 -------------------------------------
 <b>📚 まとめと今後の監視ポイント</b>
 市場は<b>「{main_cause}」</b>を背景に、<b>{market_signal}</b>の状況にあります。
-MLモデルは短期的には<b>{final_conclusion}</b>を示唆していますが、不確実性スコア<b>{uncertainty_score*100:.1f}%</b>を考慮し、ポジションサイズを調整することを推奨します。
+MLモデルの示唆と市場の過熱度を考慮し、慎重なポジションサイジングを推奨します。
 
-<b><span style="color:#007bff;">✅ 次の4時間監視ポイント:</span></b>
-1. RSIが{'70を突破/下回る' if rsi < 70 else '70以下に冷却する'}か。
-2. FRが{'0.00015%を下回る' if fr > 0.00015 else 'さらに上昇する'}か。
-3. 価格が20-SMA (${sma:.2f}) を{'維持できる' if price > sma else '回復できる'}か。
+<b>✅ 次の4時間監視ポイント:</b>
+1. <b>RSI</b>が{'70を突破/下回る' if rsi < 70 else '70以下に冷却する'}か。
+2. <b>FR</b>が{'0.00015%を下回る' if fr > 0.00015 else 'さらに上昇する'}か。
+3. 価格が<b>20-SMA</b> (${sma:.2f}) を{'維持できる' if price > sma else '回復できる'}か。
 """
         return report_structure, report_conclusion
         
