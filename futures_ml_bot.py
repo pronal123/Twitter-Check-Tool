@@ -1,4 +1,4 @@
-# futures_ml_bot.py (最高峰の市場分析レポート生成バージョン)
+# futures_ml_bot.py (1時間足に最適化された最高峰の市場分析レポート生成バージョン)
 
 import os
 import ccxt
@@ -20,7 +20,8 @@ TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
 
 FUTURES_SYMBOL = 'BTC/USDT'
-TIMEFRAME = '4h' # 予測の期間（4時間足）
+# 1時間ごとのレポートに対応するため、時間足を '1h' に設定
+TIMEFRAME = '1h' 
 MODEL_FILENAME = 'btc_futures_ml_model.joblib'
 
 # 外部APIエンドポイント (Fear & Greed Index)
@@ -34,7 +35,6 @@ def fetch_advanced_metrics(exchange: ccxt.Exchange, symbol: str) -> Dict[str, An
         'funding_rate': 0.0, 
         'fg_index': 50, 
         'fg_value': 'Neutral (API失敗)'
-        # 高度な集計データは有料APIが必要なため、意図的にスキップ
     }
     metrics.update(default_fallbacks)
 
@@ -96,6 +96,7 @@ class FuturesMLBot:
         if df.empty:
             return pd.DataFrame(), pd.Series(dtype=int)
 
+        # 1時間足に対応するため、特徴量はそのまま維持
         df['SMA'] = ta.sma(df['Close'], length=20)
         df['RSI'] = ta.rsi(df['Close'], length=14)
         df['MACD_H'] = ta.macd(df['Close'])['MACDh_12_26_9']
@@ -127,6 +128,7 @@ class FuturesMLBot:
     # --- (C) モデルの学習と保存 (変更なし) ---
     def train_and_save_model(self, df_long_term: pd.DataFrame) -> bool:
         print("🧠 モデルの再学習タスクを開始...")
+        # 1時間足のデータで学習を行う
         X_train, Y_train = self.create_ml_features(df_long_term.copy())
         
         if X_train.empty:
@@ -161,7 +163,7 @@ class FuturesMLBot:
         prediction_val = model.predict(latest_X)[0]
         prediction_proba = model.predict_proba(latest_X)[0]
         
-        # 🆕 プレミアムレポートを生成
+        # プレミアムレポートを生成
         full_report = self._generate_premium_report(
             latest_price_data=df_latest.iloc[-1],
             latest_features=latest_X.iloc[-1],
@@ -181,23 +183,20 @@ class FuturesMLBot:
     def _determine_market_regime(self, price: float, sma: float, atr: float, high: float, low: float) -> Tuple[str, str]:
         """SMAとATRを用いて市場構造（レジーム）を判断する"""
         
-        # 1. トレンド vs. レンジの判断
-        # ATRの0.5倍をノイズレベルとし、SMAからの乖離がこれより大きいか
         sma_deviation = abs(price - sma)
         is_trending = sma_deviation > (atr * 0.5)
         
-        # 2. 変動の度合い (過去3期間の高値/安値幅)
         price_range = high - low
         is_tight_range = price_range < (atr * 0.5)
 
         if is_trending:
             if price > sma:
-                regime_status = "上昇トレンド継続"
+                regime_status = "短期上昇トレンド継続"
                 regime_emoji = "🚀"
             else:
-                regime_status = "下降トレンド継続"
+                regime_status = "短期下降トレンド継続"
                 regime_emoji = "🌊"
-        else: # レンジ相場またはブレイクアウト前夜
+        else:
             if is_tight_range:
                 regime_status = "ブレイクアウト前夜 (低ボラティリティ収束)"
                 regime_emoji = "⏳"
@@ -210,7 +209,6 @@ class FuturesMLBot:
     def _analyze_macro_sentiment(self, fg_index: int, fr: float) -> Tuple[str, List[str], str]:
         """F&G IndexとFRからマクロなセンチメントと核心リスクを判断する"""
         
-        # センチメントの定性評価
         if fg_index >= 70:
             sentiment_summary = "極度の楽観（Greed）。ロングポジション過多による調整リスク高。"
             risk_color = "🔴"
@@ -218,13 +216,12 @@ class FuturesMLBot:
             sentiment_summary = "極度の恐怖（Fear）。パニック売りからの短期的な強力反発期待（逆張り妙味）。"
             risk_color = "🟢"
         else:
-            sentiment_summary = "中立。市場心理はバランスが取れているが、特定の要因（FRなど）でリスクが増加する可能性。"
+            sentiment_summary = "中立。特定の要因（FRなど）でリスクが増加する可能性。"
             risk_color = "🟡"
 
-        # 核心リスク（市場の傾き）
         core_risks = []
         if fr > 0.00015:
-            core_risks.append(f"<b>資金調達率 (FR):</b> {fr*100:.4f}%と極めて高水準。ロング勢への資金調達コスト増による、強制的な<b>ロングスクイーズリスク</b>が主要因。")
+            core_risks.append(f"<b>資金調達率 (FR):</b> {fr*100:.4f}%と極めて高水準。強制的な<b>ロングスクイーズリスク</b>が主要因。")
         else:
              core_risks.append("マクロ的リスクは、主に外部要因（金利、ETF動向）に依存。ポジションの傾きは現在中立。")
         
@@ -233,7 +230,7 @@ class FuturesMLBot:
 
         return sentiment_summary, core_risks, risk_color
         
-    # --- (E) 🆕 プレミアムレポート生成関数 ---
+    # --- (E) プレミアムレポート生成関数 ---
     def _generate_premium_report(self, latest_price_data: pd.Series, latest_features: pd.Series, advanced_data: Dict[str, Any], ml_prediction: int, proba: np.ndarray) -> str:
         """ML予測と実データを統合し、最高峰の分析レポートを生成する。"""
         
@@ -243,8 +240,6 @@ class FuturesMLBot:
         low = latest_price_data['Low']
         sma = latest_features.get('SMA', price)
         atr = latest_features.get('ATR', price * 0.01)
-        rsi = latest_features.get('RSI', 50)
-        macd_h = latest_features.get('MACD_H', 0)
         
         # 予測と信頼度
         pred_map = {-1: "📉 下落", 0: "↔️ レンジ", 1: "📈 上昇"}
@@ -264,16 +259,17 @@ class FuturesMLBot:
         regime_status, regime_emoji = self._determine_market_regime(price, sma, atr, high, low)
         sentiment_summary, core_risks, risk_color = self._analyze_macro_sentiment(fg_index, fr)
         
-        # ATRに基づくレベル
+        # ATRに基づくレベル (1時間足のため、よりタイト)
         R1 = price + atr
         S1 = price - atr
         R2 = price + (atr * 2)
         S2 = price - (atr * 2)
         
         # 予測の解釈
-        ml_interpretation = f"MLモデルは次の{TIMEFRAME}で<b>{ml_result}</b>を予測しています (信頼度: {max_proba*100:.1f}%)。"
+        ml_interpretation = f"MLモデルは次の1時間で<b>{ml_result}</b>を予測しています (信頼度: {max_proba*100:.1f}%)。"
         if ml_prediction == 0 and max_proba < 0.4:
             ml_interpretation += "MLの判断が分かれており、不確実性が高いため、レンジ内での取引を推奨します。"
+
 
         # ----------------------------------------------------------------
         # 2. レポート構造の生成
@@ -284,12 +280,12 @@ class FuturesMLBot:
         core_reason_list.extend(core_risks)
         
         # テクニカルな核心理由
-        if regime_status.startswith("上昇トレンド"):
-            core_reason_list.append(f"<b>テクニカル要因:</b> 価格は20-SMA (${sma:.2f}) を大きく上回り、力強いモメンタム ({'強気' if macd_h > 0 else '弱気'}) で推移。")
-        elif regime_status.startswith("下降トレンド"):
-            core_reason_list.append(f"<b>テクニカル要因:</b> 20-SMA (${sma:.2f}) への回帰失敗と、MACD/RSIによる下落モメンタムが支配的。")
+        if regime_status.startswith("短期上昇トレンド"):
+            core_reason_list.append(f"<b>テクニカル要因:</b> 価格は20-SMA (${sma:.2f}) を上回り、短期モメンタムは継続中。")
+        elif regime_status.startswith("短期下降トレンド"):
+            core_reason_list.append(f"<b>テクニカル要因:</b> 20-SMA (${sma:.2f}) をレジスタンスとして機能させており、短期的な下落圧力が支配的。")
         else:
-             core_reason_list.append(f"<b>テクニカル要因:</b> {regime_status}。ボラティリティ (${atr:.2f}) が収束/拡散の兆候を示しており、方向性のある取引はR1/S1ブレイク後に限定される。")
+             core_reason_list.append(f"<b>テクニカル要因:</b> {regime_status}。ボラティリティ (${atr:.2f}) が収束/拡散の兆候。")
 
 
         # --- チャンスセクション ---
@@ -297,13 +293,11 @@ class FuturesMLBot:
             f"<b>ML予測との一致:</b> {ml_result}の方向にエントリーする場合、信頼度 ({max_proba*100:.1f}%) を裏付けとして活用可能。",
             f"<b>市場心理の逆張り:</b> F&G指数が<b>{fg_index}</b> ({advanced_data['fg_value']}) の場合、過去の統計では強力な逆張りの買い場を提供する傾向がある。",
         ]
-        if macd_h > 0:
-            chance_list.append("<b>短期モメンタム:</b> MACDヒストグラムが陽転しており、短期的な上抜け圧力が発生中。")
-
+        
         # --- リスクセクション ---
         risk_list = [
             f"<b>{risk_color} 総合リスク警告:</b> 市場構造は現在 <b>{regime_status}</b> であり、FRやFGIに基づくセンチメントは {sentiment_summary} です。",
-            f"<b>ボラティリティリスク (ATR):</b> 過去の平均変動幅は <b>${atr:.2f}</b> です。ストップロスは最低この値幅を考慮に入れる必要があります。",
+            f"<b>ボラティリティリスク (ATR):</b> 過去14時間の平均変動幅は <b>${atr:.2f}</b> です。ストップロスは最低この値幅を考慮に入れる必要があります。",
             f"<b>重要レベル割れ:</b> 2-ATRサポートS2 (${S2:.2f}) を割り込んだ場合、次の主要な節目まで急落するリスクが高い。"
         ]
         
@@ -311,12 +305,12 @@ class FuturesMLBot:
         
         # ターゲット価格と戦略の提案
         if ml_prediction == 1 or fg_index <= 30: # 上昇予測 or 極度の恐怖（逆張り買い）
-            strategy_title = "📈 <b>推奨戦略: 押し目買い/短期ロング</b>"
+            strategy_title = "📈 <b>推奨戦略: 短期ロング/押し目買い</b>"
             entry_zone = f"<b>S1: ${S1:.2f}〜現在価格</b>（市場の弱さを利用したエントリー）"
-            sl_level = f"<b>S2: ${S2:.2f}</b>（ここを割るとトレンド転換の可能性）"
+            sl_level = f"<b>S2: ${S2:.2f}</b>（ここを割ると短期トレンド転換の可能性）"
             tp_targets = f"R1: <b>${R1:.2f}</b> (50%)、R2: <b>${R2:.2f}</b> (30%)、R2+ATR: <b>${R2+atr:.2f}</b> (20%)"
         elif ml_prediction == -1 or fr > 0.00015: # 下落予測 or 高FR（戻り売り/ショート）
-            strategy_title = "📉 <b>推奨戦略: 戻り売り/短期ショート</b>"
+            strategy_title = "📉 <b>推奨戦略: 短期ショート/戻り売り</b>"
             entry_zone = f"<b>現在価格〜R1: ${R1:.2f}</b>（一時的な戻りを狙った売り）"
             sl_level = f"<b>R2: ${R2:.2f}</b>（ここを突破するとショートスクイーズの可能性）"
             tp_targets = f"S1: <b>${S1:.2f}</b> (50%)、S2: <b>${S2:.2f}</b> (30%)、S2-ATR: <b>${S2-atr:.2f}</b> (20%)"
@@ -332,8 +326,8 @@ class FuturesMLBot:
         # ----------------------------------------------------------------
         
         report = f"""
-<b>【👑 BTC市場 最高峰分析レポート 👑】</b>
-📅 <b>{current_time}</b> | <b>{TIMEFRAME}足分析</b>
+<b>【👑 BTC 1時間足 最新状況レポート 👑】</b>
+📅 <b>{current_time}</b> | <b>{TIMEFRAME}足分析</b> (次期予測: 1時間後)
 <p>
     <b>現在の市場構造:</b> <b>{regime_emoji} {regime_status}</b> | <b>現在価格: ${price:.2f} USDT</b>
 </p>
@@ -369,12 +363,12 @@ class FuturesMLBot:
 <b>利確（TP）:</b> {tp_targets}
 </pre>
 <p>
-<b>💡 戦略のヒント:</b> ML予測とセンチメントが一致する時（例: MLが「下落」かつFGIが「楽観」）、エントリーのロットを増やすことを検討してください。
+<b>💡 戦略のヒント:</b> 1時間足はノイズが多いため、推奨レベルでの<b>部分利確・部分損切り</b>の徹底が不可欠です。
 </p>
 ---------------------------------------
 <b>📚 まとめ：トレーダーへのメッセージ</b>
-現在の市場は <b>{regime_status}</b> であり、<b>{ml_result}</b>の方向性を示唆しています。
-しかし、ATR (${atr:.2f}) に注意し、感情（FGI: {fg_index}）に流されず、設定したS2/R2レベルでの損切りを厳守することが、この不安定な市場で最も重要です。
+現在の市場は <b>{regime_status}</b> の段階にあり、短期的な動向を予測するにはMLモデルの信頼度 ({max_proba*100:.1f}%) とATRによるレベルの厳守が鍵です。
+緻密な価格変動 (${atr:.2f}) に対応するため、高い集中力を持って取引に臨んでください。
 """
         return report
         
