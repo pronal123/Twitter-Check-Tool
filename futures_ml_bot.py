@@ -279,7 +279,8 @@ class FuturesMLBot:
 <b>【BTC市場 現状と短期見通し 分析レポート】</b>
 📅 {current_time} | 4h足分析
 
-<h3>🔍 1. 市場構造の現状把握</h3>
+<b>🔍 1. 市場構造の現状把握</b>
+
 📌 <b>現在のドライバー:</b> <b>{main_cause}</b> が市場の方向性を主導しています。
 📌 <b>現在価格:</b> <b>${price:.2f}</b>
 
@@ -294,7 +295,7 @@ MACD Hist.     | {macd_h:.2f}           | <b>{macd_comment}</b>。
 ATR (ボラティリティ) | ${atr:.2f}            | 過去14期間の平均変動幅。現在価格の<b>{atr/price*100:.2f}%</b>。
 </pre>
 -------------------------------------
-<h3>📈 2. センチメントと過熱シグナル（OI/LSR代替分析）</h3>
+<b>📈 2. センチメントと過熱シグナル（OI/LSR代替分析）</b>
 <pre>
 カテゴリ        | 指標         | 現在値/ステータス     | 分析/示唆
 --------------------------------------------------------------------------------
@@ -325,35 +326,31 @@ ATR (ボラティリティ) | ${atr:.2f}            | 過去14期間の平均変
              entry_long = f"現在のトレンドに沿ったエントリー ({price * 0.998:.2f}付近)"
              entry_short = f"現在のトレンドに沿ったエントリー ({price * 1.002:.2f}付近)"
         
+        # HTMLテーブルを、Telegramで確実に表示できる構造化テキストに置き換える
+        strategy_block = f"""
+<b>🟢 強気シナリオ (ML予測が強気の場合の指針)</b>
+  - <b>エントリー目標:</b> {entry_long if ml_prediction >= 0 else '---'}
+  - <b>利益確定目標:</b> 直近の高値/主要レジスタンスゾーン
+
+<b>🔴 弱気シナリオ (リスク管理の指針)</b>
+  - <b>エントリー目標:</b> {entry_short if ml_prediction <= 0 else '---'}
+  - <b>損切りライン:</b> ATRに基づく ${atr:.2f} (厳守)
+"""
+        
         # --- レポートB: BOTの最終見解と具体的な行動計画 (HTML形式) ---
         report_conclusion = f"""
 <b>【BOTの最終見解と行動計画】</b>
 📅 {current_time}
 
-<h3>🎯 3. BOTの最終見解（これからのBTC見通し）</h3>
+<b>🎯 3. BOTの最終見解（これからのBTC見通し）</b>
 <b>ML予測結論:</b> <b>{final_conclusion}</b> (信頼度: {max_proba*100:.1f}%)
 
 <p>{overall_advice}</p>
 
-<table style="width:100%; text-align:left;">
-  <tr>
-    <td style="background-color:#007bff; color:white; padding:10px; border-radius:5px; width:50%;"><b>🟢 強気シナリオ (ML予測が強気の場合の指針)</b></td>
-    <td style="background-color:#dc3545; color:white; padding:10px; border-radius:5px; width:50%;"><b>🔴 弱気シナリオ (リスク管理の指針)</b></td>
-  </tr>
-  <tr>
-    <td style="padding:10px; border:1px solid #007bff; border-top:none;">
-        - <b>エントリー目標:</b> {entry_long if ml_prediction >= 0 else '---'} <br>
-        - <b>利益確定目標:</b> 直近の高値/主要レジスタンスゾーン
-    </td>
-    <td style="padding:10px; border:1px solid #dc3545; border-top:none;">
-        - <b>エントリー目標:</b> {entry_short if ml_prediction <= 0 else '---'} <br>
-        - <b>損切りライン:</b> ATRに基づく ${atr:.2f} (厳守)
-    </td>
-  </tr>
-</table>
+{strategy_block}
 
 -------------------------------------
-<h3>📚 まとめと今後の監視ポイント</h3>
+<b>📚 まとめと今後の監視ポイント</b>
 市場は<b>「{main_cause}」</b>を背景に、<b>{market_signal}</b>の状況にあります。
 MLモデルは短期的には<b>{final_conclusion}</b>を示唆していますが、不確実性スコア<b>{uncertainty_score*100:.1f}%</b>を考慮し、ポジションサイズを調整することを推奨します。
 
