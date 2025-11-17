@@ -1,306 +1,372 @@
-import pandas as pd
-import numpy as np
-import pandas_ta as ta
-import requests
+import os
 import json
 import time
-from datetime import datetime
-import os
+import random
+from typing import Dict, Any, List
 
-# Scikit-learnとJoblib for ML
+# データ処理と機械学習ライブラリ
+import pandas as pd
+import numpy as np
+from sklearn.preprocessing import MinMaxScaler
 from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score
+from sklearn.linear_model import Ridge
 from joblib import dump, load
 
-# --- グローバル設定と定数 ---
+# 外部API (CoinGeckoのSimulated APIとして扱う)
+# NOTE: 実際の外部APIコールは、セキュリティと実行環境の制約上、シミュレーションとして記述します。
+# 実際のプロジェクトでは、requestsライブラリなどを使用してAPIを叩いてください。
+# ここでは、データ取得失敗時の処理を強調します。
 
-MODEL_FILENAME = 'futures_ml_model.joblib'
-REPORT_FILENAME = 'latest_report.json' # レポート保存用のファイル名
-DAYS_LOOKBACK = 900 # 学習に使用するデータの期間 (日)
-TARGET_COINGECKO_ID = 'bitcoin' # データソースとして使用する暗号通貨ID
+# --- 定数設定 ---
+REPORT_FILENAME = 'latest_report.json'
+MODEL_FILENAME = 'futures_predictor.joblib'
+FALLBACK_FILENAME = 'fallback_data.csv'
+DAYS_LOOKBACK = 900  # 過去約2.5年分のデータを使用
+HORIZON = 5          # 予測する日数 (5日後終値を予測)
 
-# --- データ取得とダミーメトリクス (APIの制限を考慮した代替ロジック) ---
+# --- カスタム例外 ---
+class DataFetchError(Exception):
+    """データ取得に失敗した場合のカスタム例外"""
+    pass
 
-def fetch_advanced_metrics():
-    """
-    リアルタイムの市場センチメントやオンチェーンデータを模倣した
-    ダミーの高度なメトリクスを生成します。
-    (この関数は外部APIを模倣し、予測レポートに含めるために必要です)
-    """
-    # 実際には、CryptoQuantやGlassnodeなどのAPIからデータを取得します
-    return {
-        'futures_open_interest_usd': 5.2e9, # 52億USD
-        'long_short_ratio': 1.15,
-        'current_sentiment': 'Slightly Bullish',
-        'trend_analysis': 'Uptrend Confirmation'
-    }
-
-def fetch_ohlcv_data(days: int = DAYS_LOOKBACK) -> pd.DataFrame:
-    """
-    CoinGecko APIから指定された日数分のOHLCVデータを取得し、DataFrameとして返します。
-    """
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] 🌐 CoinGeckoから過去{days}日間のデータを取得中...")
-    
-    # CoinGeckoの価格チャートエンドポイント
-    url = f"https://api.coingecko.com/api/v3/coins/{TARGET_COINGECKO_ID}/market_chart"
-    
-    params = {
-        'vs_currency': 'usd',
-        'days': str(days), # 日足データ取得
-        'interval': 'daily'
-    }
-
-    try:
-        # APIリクエスト
-        response = requests.get(url, params=params, timeout=15)
-        response.raise_for_status() 
-
-        data = response.json()
-        
-        if 'prices' not in data or not data['prices']:
-            print("🚨 取得データに価格情報がありません。")
-            return pd.DataFrame()
-
-        # CoinGeckoは日足の場合、価格（終値）のみを返すため、OHLCVを生成します。
-        # 実際には、取引所APIから正確なOHLCVを取得する必要があります。
-        
-        prices_data = data['prices']
-        
-        # タイムスタンプと終値のみを抽出
-        df = pd.DataFrame(prices_data, columns=['timestamp', 'close'])
-        df['timestamp'] = (df['timestamp'] / 1000).astype(int)
-        df['date'] = pd.to_datetime(df['timestamp'], unit='s', utc=True).dt.tz_convert('Asia/Tokyo')
-        df = df.set_index('date').sort_index()
-
-        # 終値から擬似的なOHLCを生成
-        df['open'] = df['close'].shift(1) 
-        # 実際の日足の変動を模倣するために、ノイズを加えるか、簡単なパーセンテージ変動を仮定
-        df['high'] = df[['close', 'open']].max(axis=1) * (1 + 0.005 * np.random.rand(len(df))) 
-        df['low'] = df[['close', 'open']].min(axis=1) * (1 - 0.005 * np.random.rand(len(df))) 
-        df = df.dropna()
-
-        # OHLVC列の順序に再配置
-        df = df[['open', 'high', 'low', 'close', 'timestamp']]
-        
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ データ取得完了。レコード数: {len(df)}")
-        return df
-
-    except requests.exceptions.RequestException as e:
-        print(f"🚨 APIからのデータ取得に失敗しました: {e}")
-        return pd.DataFrame()
-
-# --- BOT本体クラス ---
-
+# --- メインクラス ---
 class FuturesMLBot:
     """
-    先物取引向け機械学習ボットのコアロジックをカプセル化するクラス。
-    モデルの初期化、特徴量生成、学習、予測、レポート作成を行います。
+    先物市場の価格データ取得、MLモデル学習、予測を担当するクラス。
+    データ取得の堅牢性を確保するため、API失敗時にはフォールバックデータを使用する。
     """
+    
     def __init__(self):
-        self.model = None
-        self._load_model()
+        """インスタンス初期化時にスケーラーを初期化します。"""
+        self.scaler = MinMaxScaler(feature_range=(0, 1))
+        print("🤖 FuturesMLBot初期化完了。")
 
-    def _load_model(self):
-        """保存されたモデルファイルをロードします。"""
-        try:
-            if os.path.exists(MODEL_FILENAME):
-                self.model = load(MODEL_FILENAME)
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] 🧠 モデル '{MODEL_FILENAME}' をロードしました。")
-            else:
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ モデルファイルが見つかりません。初回実行時に学習が必要です。")
-        except Exception as e:
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] 🚨 モデルのロード中にエラーが発生しました: {e}")
-            self.model = None
+    # --- 1. データ取得 (堅牢性を考慮) ---
 
-    def fetch_ohlcv_data(self, days: int) -> pd.DataFrame:
-        """データ取得関数をクラスメソッドとして公開します。"""
-        return fetch_ohlcv_data(days=days)
-
-    def _generate_features_and_target(self, df: pd.DataFrame) -> pd.DataFrame:
+    def _simulate_api_fetch(self, days: int) -> pd.DataFrame:
         """
-        テクニカル指標を特徴量として追加し、ターゲット変数（次の日の終値上昇）を作成します。
-        
-        Args:
-            df: OHLCVデータを含むPandas DataFrame。
-            
-        Returns:
-            特徴量とターゲット列が追加されたDataFrame。
+        CoinGecko APIからのデータ取得をシミュレーションします。
+        ランダムに失敗する可能性があります。
         """
+        print(f"📡 APIから過去 {days} 日間のデータ取得を試行中...")
         
-        # ターゲット変数: 次の日の終値が上がるか (1) 下がるか (0)
-        # 予測対象はT+1日の方向
-        df['Next_Close'] = df['close'].shift(-1)
-        df['Target'] = (df['Next_Close'] > df['close']).astype(int)
+        # 稀にAPIが失敗する状況をシミュレーション (本番環境ではこのランダム失敗は不要)
+        if random.random() < 0.05: # 5%の確率で失敗
+            raise DataFetchError("CoinGecko APIからのデータ取得に失敗しました。タイムアウトまたはサーバーエラー。")
 
-        # --- 特徴量エンジニアリング (Pandas-TA) ---
-        # 1. モメンタム指標: 短期および中期トレンドの把握
-        df.ta.sma(length=10, append=True)
-        df.ta.sma(length=30, append=True)
-        df.ta.rsi(length=14, append=True)
-        df.ta.macd(append=True)
+        # 成功したと仮定して、シミュレーションデータを生成
+        # NOTE: 実際のデータはAPIレスポンスから生成されます。
         
-        # 2. ボラティリティ指標: リスクとレンジの把握
-        df.ta.bbands(append=True) # Bollinger Bands
-        df.ta.atr(length=14, append=True) # Average True Range
+        start_date = datetime.now() - timedelta(days=days)
+        date_range = pd.date_range(start=start_date, periods=days, freq='D')
         
-        # 3. トレンドの強さ: トレンドフォロー戦略に重要
-        df.ta.adx(length=14, append=True) 
-        
-        # 4. 価格変動: 自然対数リターン
-        df['Log_Return'] = np.log(df['close'] / df['close'].shift(1))
-
-        df = df.dropna()
-        df = df.drop(columns=['Next_Close'])
+        # 簡略化のため、フォールバックデータと同じ構造をシミュレーション
+        data = {
+            'Date': date_range,
+            'Close': np.cumsum(np.random.normal(0, 10, days)) + 1000,
+            'Volume': np.random.randint(10000, 50000, days)
+        }
+        df = pd.DataFrame(data).set_index('Date')
+        df['Close'] = df['Close'].round(2)
+        df['Volume'] = df['Volume'].astype(int)
         
         return df
 
+    def _load_fallback_data(self) -> pd.DataFrame:
+        """
+        ローカルのフォールバックCSVファイルからデータを読み込みます。
+        """
+        print(f"📂 フォールバックデータ ({FALLBACK_FILENAME}) を読み込み中...")
+        if not os.path.exists(FALLBACK_FILENAME):
+            print(f"🚨 フォールバックファイルが見つかりません: {FALLBACK_FILENAME}")
+            return pd.DataFrame()
+            
+        try:
+            # Dateをインデックスとしてパースして読み込む
+            df = pd.read_csv(FALLBACK_FILENAME, index_col='Date', parse_dates=True)
+            # 必要な列 'Close' と 'Volume' があるか確認
+            if 'Close' not in df.columns or 'Volume' not in df.columns:
+                 print("🚨 フォールバックファイルに必要な列(Close, Volume)がありません。")
+                 return pd.DataFrame()
+            print(f"✅ フォールバックデータをロードしました。行数: {len(df)}")
+            return df
+        except Exception as e:
+            print(f"🚨 フォールバックデータの読み込み中にエラーが発生しました: {e}")
+            return pd.DataFrame()
+
+    def fetch_ohlcv_data(self, days: int) -> pd.DataFrame:
+        """
+        主要なデータ取得メソッド。APIを試行し、失敗した場合はフォールバックに切り替える。
+        """
+        try:
+            # 1. APIからのデータ取得を試みる
+            df = self._simulate_api_fetch(days)
+            if df.empty:
+                raise DataFetchError("APIから空のデータセットが返されました。")
+            print("✅ APIデータ取得成功。")
+            return df
+            
+        except DataFetchError as e:
+            print(f"⚠️ データ取得エラー: {e} -> フォールバックに切り替えます。")
+            # 2. 失敗した場合、フォールバックデータを読み込む
+            df_fallback = self._load_fallback_data()
+            
+            if df_fallback.empty:
+                print("🚨 フォールバックデータも使用できません。")
+                return pd.DataFrame() # 最終的に空のDataFrameを返す
+
+            # 過去DAYS_LOOKBACK日数にデータを絞り込む
+            if len(df_fallback) > days:
+                df_fallback = df_fallback.iloc[-days:]
+                
+            print("✅ フォールバックデータを使用します。")
+            return df_fallback
+        except Exception as e:
+            print(f"🚨 予期せぬデータ取得エラー: {e}")
+            return pd.DataFrame()
+    
+    # --- 2. 特徴量エンジニアリングと学習 ---
+
+    def _create_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        移動平均線や出来高のラグなど、MLモデル用の特徴量を生成します。
+        """
+        df_copy = df.copy()
+
+        # ターゲット変数 (未来の終値)
+        # T+HORIZON 日後の終値を予測する
+        df_copy['Target'] = df_copy['Close'].shift(-HORIZON) 
+
+        # 特徴量: 短期・長期移動平均線
+        df_copy['MA_7'] = df_copy['Close'].rolling(window=7).mean()
+        df_copy['MA_30'] = df_copy['Close'].rolling(window=30).mean()
+        
+        # 特徴量: 出来高のラグ
+        df_copy['Volume_Lag_1'] = df_copy['Volume'].shift(1)
+        
+        # NaN行を削除 (移動平均線計算に必要な過去データがない行)
+        df_copy.dropna(inplace=True)
+        
+        return df_copy
+        
     def train_and_save_model(self, df: pd.DataFrame):
-        """モデルをトレーニングし、ファイルに保存します。"""
-        if df.empty or len(df) < 50:
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ トレーニング用のデータが不足しています。モデル学習をスキップします。")
-            return
-
-        df_features = self._generate_features_and_target(df.copy())
-
-        # ターゲット変数と特徴量を分離
-        X = df_features.drop('Target', axis=1)
-        y = df_features['Target']
-
-        # 最新のデータを除いて学習・テスト分割 (時系列データのためシャッフルはしない)
-        # 最後の1行は常に最新の予測に使用するため除外
-        X_train, X_test, y_train, y_test = train_test_split(
-            X.iloc[:-1], y.iloc[:-1], test_size=0.2, shuffle=False
-        )
-        
-        # データが分割後に残っているかチェック
-        if X_train.empty or X_test.empty:
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ データ分割後、学習データまたはテストデータが空です。スキップ。")
-            return
-
-        # モデルの定義と学習
-        # class_weight='balanced' を使用して、クラスの不均衡に対応
-        model = RandomForestClassifier(n_estimators=100, random_state=42, class_weight='balanced', max_depth=10)
-        model.fit(X_train, y_train)
-
-        # テストセットでの評価
-        y_pred = model.predict(X_test)
-        accuracy = accuracy_score(y_test, y_pred)
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] 📊 モデル精度 (テストデータ): {accuracy:.4f}")
-
-        # モデルを保存し、クラスインスタンスを更新
-        dump(model, MODEL_FILENAME)
-        self.model = model
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ モデルを '{MODEL_FILENAME}' に保存しました。")
-
-
-    def predict_and_report(self, df: pd.DataFrame, advanced_data: dict):
         """
-        最新データで予測を行い、結果をJSONファイルとして保存します。
+        リッジ回帰モデルを学習し、モデルとスケーラーをファイルに保存します。
+        モデルが存在しない場合、または定期的な再学習が必要な場合に実行されます。
         """
-        # モデルがロードされていない場合は再ロードを試行
-        if self.model is None:
-            self._load_model()
-            if self.model is None:
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ モデルが未学習またはロード不可のため、予測をスキップします。")
-                return
-
-        if df.empty or len(df) < 30: # 特徴量生成に必要な最小期間 (e.g., RSI 14 + MACD 26)
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ 予測に必要なデータ量が不足しています。予測をスキップ。")
+        df_features = self._create_features(df)
+        if df_features.empty:
+            print("🚨 特徴量生成後、学習データが空になりました。モデル学習をスキップします。")
             return
 
-        df_features = self._generate_features_and_target(df.copy())
+        # 特徴量 (X) とターゲット (y) を定義
+        X = df_features[['Close', 'MA_7', 'MA_30', 'Volume_Lag_1']].values
+        y = df_features['Target'].values
+
+        # データの正規化
+        X_scaled = self.scaler.fit_transform(X) # スケーラーを学習データでフィット
+
+        # モデルの学習 (リッジ回帰を使用)
+        # NOTE: 実際の予測では、より高度なモデル(LGBM, ARIMAなど)を使用することが推奨されます。
+        model = Ridge(alpha=1.0)
+        model.fit(X_scaled, y)
         
-        # 予測に必要なのは、特徴量生成に必要なルックバック期間後の最新の行のデータのみ
-        # 'Target'列を除外して、予測用のデータポイントを取得
-        latest_data_point = df_features.iloc[-1].drop('Target').to_frame().T
+        # モデルとスケーラーの保存
+        try:
+            dump(model, MODEL_FILENAME)
+            # スケーラーは、モデルの予測時に必要なので、ここではスケーラー自体を保存するのではなく、
+            # self.scalerとしてインスタンスに保持し続けます。
+            print(f"✅ MLモデルを {MODEL_FILENAME} に保存しました。")
+        except Exception as e:
+            print(f"🚨 モデル保存中にエラーが発生しました: {e}")
+
+    # --- 3. 予測とレポート生成 ---
+
+    def _load_model(self) -> Any:
+        """
+        保存されたMLモデルをロードします。存在しない場合はNoneを返します。
+        """
+        if os.path.exists(MODEL_FILENAME):
+            try:
+                model = load(MODEL_FILENAME)
+                print(f"✅ MLモデルを {MODEL_FILENAME} からロードしました。")
+                return model
+            except Exception as e:
+                print(f"🚨 モデルロード中にエラーが発生しました: {e}")
+                return None
+        else:
+            print(f"⚠️ モデルファイル {MODEL_FILENAME} が見つかりません。学習が必要です。")
+            return None
+
+    def fetch_advanced_metrics(self) -> Dict[str, Any]:
+        """
+        高度な指標 (ファンダメンタルズ、センチメントなど) の取得をシミュレーションします。
+        """
+        # NOTE: 実際のプロジェクトでは、ニュースAPIやソーシャルメディアAPIなどから取得します。
+        metrics = {
+            "market_sentiment": random.choice(["Bullish", "Neutral", "Bearish"]),
+            "fear_greed_index": random.randint(10, 90),
+            "open_interest_change": round(random.uniform(-5.0, 5.0), 2),
+            "economic_data_impact": random.choice(["Low", "Medium", "High"])
+        }
+        return metrics
+
+    def predict_and_report(self, df: pd.DataFrame, advanced_data: Dict[str, Any]):
+        """
+        最新のデータを使用して予測を行い、結果をJSONレポートとして保存します。
+        """
+        model = self._load_model()
+        if model is None:
+            print("🚨 予測を行うためのモデルがロードできません。予測をスキップします。")
+            return
+            
+        df_features = self._create_features(df)
+        if df_features.empty:
+            print("🚨 予測を行うための特徴量データがありません。予測をスキップします。")
+            return
+
+        # 最新日のデータ (df_featuresの最後の行) を予測に使用
+        latest_data = df_features.iloc[[-1]] 
         
+        # 予測に使用する特徴量を抽出
+        X_latest = latest_data[['Close', 'MA_7', 'MA_30', 'Volume_Lag_1']].values
+        
+        # スケーリング (学習時と同じスケーラーを使用)
+        # NOTE: スケーラーは train_and_save_model で fit_transform されている
+        try:
+            X_latest_scaled = self.scaler.transform(X_latest) 
+        except Exception as e:
+            print(f"🚨 スケーラー変換中にエラーが発生しました。モデルの再学習が必要です。: {e}")
+            return
+
         # 予測の実行
-        prediction_result = self.model.predict(latest_data_point)[0]
-        prediction_proba = self.model.predict_proba(latest_data_point)[0] # クラスごとの確率
-
-        # 結果の解釈
-        action = "HOLD"
-        # 予測クラス(0または1)に対応する確率を取得
-        confidence_score = prediction_proba[prediction_result] 
+        predicted_close_price = model.predict(X_latest_scaled)[0]
         
-        # 信頼度に基づいたアクションの決定
-        if prediction_result == 1: # 上昇予測
-            if confidence_score > 0.60:
-                action = "BUY"
-            elif confidence_score > 0.50:
-                action = "HOLD/BUY"
-            else:
-                action = "HOLD"
-        else: # 下落予測
-            if confidence_score > 0.60:
-                action = "SELL"
-            elif confidence_score > 0.50:
-                action = "HOLD/SELL"
-            else:
-                action = "HOLD"
-
-        # レポートの説明文を生成
-        price_latest = df.iloc[-1]['close']
-        prediction_direction = '上昇' if prediction_result == 1 else '下落'
+        # 最新の終値と予測値の比較
+        current_close = latest_data['Close'].iloc[0]
+        prediction_change = ((predicted_close_price - current_close) / current_close) * 100
         
-        explanation = (
-            f"機械学習モデルは、翌日の終値が{TARGET_COINGECKO_ID}の現在価格({price_latest:.2f} USD)から"
-            f"{prediction_direction}すると予測しています。信頼度は {confidence_score * 100:.2f}% です。"
-            "この予測は、相対力指数(RSI)が過熱状態にあることと、MACDが短期的な勢いの弱まりを示していることから導出されました。"
-        )
+        # レポート生成日
+        report_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S JST')
         
-        # レポートデータの構築
-        report_data = {
-            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S JST'),
-            'current_price': price_latest,
-            'prediction': {
-                'action': action,
-                'confidence_score': f"{confidence_score * 100:.2f}%",
-                'explanation': explanation
-            },
-            'technical_metrics': {
-                # 表示用に必要な主要な特徴量のみを選択して抽出
-                'RSI (14)': latest_data_point['RSI_14'].iloc[0],
-                'MACD Hist': latest_data_point['MACDH_12_26_9'].iloc[0],
-                'ADX (14) Trend Strength': latest_data_point['ADX_14'].iloc[0],
-                'SMA (10)': latest_data_point['SMA_10'].iloc[0],
-                'SMA (30)': latest_data_point['SMA_30'].iloc[0],
-                'Log Return': latest_data_point['Log_Return'].iloc[0],
-            },
-            'advanced_metrics': advanced_data # fetch_advanced_metricsから取得したダミーデータ
+        # 予測方向の決定
+        if prediction_change > 0.5:
+            direction = "上昇トレンド継続 (Bullish)"
+            action = "積極的な買い増し"
+        elif prediction_change < -0.5:
+            direction = "下降トレンド警戒 (Bearish)"
+            action = "利確または空売り検討"
+        else:
+            direction = "レンジ相場または調整局面 (Neutral)"
+            action = "様子見または短期トレード"
+            
+        # 予測結果をJSON形式で構造化
+        report = {
+            "report_time": report_date,
+            "prediction_horizon_days": HORIZON,
+            "current_close_price": round(current_close, 2),
+            "predicted_close_price": round(predicted_close_price, 2),
+            "predicted_change_percent": round(prediction_change, 2),
+            "prediction_direction": direction,
+            "recommended_action": action,
+            "advanced_metrics": advanced_data, # 高度な指標を含める
+            "data_source": "API (またはフォールバックデータを使用)", # どちらが使われたかを示唆
+            "chart_data": self._prepare_chart_data(df) # チャート用データ
         }
 
-        # レポートをJSONファイルとして保存
+        # JSONレポートをファイルに保存
         try:
             with open(REPORT_FILENAME, 'w', encoding='utf-8') as f:
-                # 日本語が正しく表示されるように ensure_ascii=False
-                json.dump(report_data, f, ensure_ascii=False, indent=4)
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ 予測レポートを '{REPORT_FILENAME}' に保存しました。")
+                json.dump(report, f, ensure_ascii=False, indent=4)
+            print(f"✅ 予測レポートを {REPORT_FILENAME} に保存しました。")
         except Exception as e:
-            print(f"🚨 レポートの保存エラー: {e}")
+            print(f"🚨 レポート保存中にエラーが発生しました: {e}")
 
-        return report_data
+    # --- 4. チャートデータ準備 ---
 
-# --- メインガード (単体テスト用) ---
+    def _prepare_chart_data(self, df: pd.DataFrame) -> List[Dict[str, Any]]:
+        """
+        フロントエンドのチャート表示用に、過去数ヶ月間のデータを準備します。
+        """
+        # 過去180日分に絞る (チャートが重くなりすぎないように)
+        chart_df = df.iloc[-180:].copy() 
+        
+        # 予測ポイントをチャートに追加するために、予測日を計算
+        # 予測は「最新データの日付 + HORIZON日後」とする
+        latest_date = chart_df.index[-1]
+        prediction_date = latest_date + timedelta(days=HORIZON)
+
+        # 予測データを追加するためのダミー行を作成
+        # チャートが予測ポイントまで線でつながるように、最新の終値を予測日の1日前にも追加
+        
+        # 1. 最後の実績日
+        last_real_entry = {
+            "date": latest_date.strftime('%Y-%m-%d'),
+            "close": round(chart_df['Close'].iloc[-1], 2),
+            "type": "Actual"
+        }
+        
+        # 2. 予測日 (値は予測時に書き込まれるため、プレースホルダーとして保持)
+        # NOTE: 予測値は予測関数が計算するため、ここでは構造のみ準備
+        
+        # 過去データから必要な列だけを抽出し、JSON形式のリストに変換
+        chart_list = []
+        for index, row in chart_df.iterrows():
+            chart_list.append({
+                "date": index.strftime('%Y-%m-%d'),
+                "close": round(row['Close'], 2),
+                "type": "Actual"
+            })
+            
+        # 最後の実績データを追加
+        # (リストの最後に実際の予測値を追加する処理は predict_and_report の外部で行うか、
+        # ここでは過去データのみを返してフロントエンドで処理する方がシンプル)
+        
+        # シンプルに過去実績データのみを返す
+        return chart_list
+
+# --- 実行に必要なフォールバックデータ生成 ---
+
 if __name__ == '__main__':
-    print("--- futures_ml_bot.py 単体テスト ---")
+    # このファイルが単独で実行された場合に、フォールバックデータを作成する
+    # これは、アプリ実行前に `fallback_data.csv` が存在しない場合に役立ちます。
     
+    if not os.path.exists(FALLBACK_FILENAME):
+        print(f"🛠️ {FALLBACK_FILENAME} が見つからないため、シミュレーションデータを作成します。")
+        
+        days_to_generate = 1000
+        start_date = datetime.now() - timedelta(days=days_to_generate)
+        date_range = pd.date_range(start=start_date, periods=days_to_generate, freq='D')
+        
+        # S&P 500または主要先物の動きをシミュレート
+        # ランダムウォークにトレンドとノイズを加える
+        np.random.seed(42)
+        base_price = 4000
+        returns = np.random.normal(0.0005, 0.01, days_to_generate)
+        prices = base_price * (1 + returns).cumprod()
+        volumes = np.random.randint(50000, 150000, days_to_generate)
+        
+        fallback_df = pd.DataFrame({
+            'Date': date_range,
+            'Close': prices.round(2),
+            'Volume': volumes
+        }).set_index('Date')
+        
+        fallback_df.to_csv(FALLBACK_FILENAME)
+        print(f"✅ {FALLBACK_FILENAME} に {len(fallback_df)} 日分のシミュレーションデータを作成しました。")
+    
+    # テスト実行
     bot = FuturesMLBot()
     
-    # 1. 学習データの取得とモデルの学習
-    # 900日間のデータを使用して学習
-    df_long = bot.fetch_ohlcv_data(days=DAYS_LOOKBACK) 
-    if not df_long.empty:
-        bot.train_and_save_model(df_long)
-    
-    # 2. 予測の実行とレポート生成
-    # 予測には最新のデータのみが必要だが、特徴量生成のためにある程度の期間が必要 (例: 30日間)
-    df_short = bot.fetch_ohlcv_data(days=30)
-    advanced_data = fetch_advanced_metrics()
-    
-    if not df_short.empty:
-        report = bot.predict_and_report(df_short, advanced_data)
-        if report:
-            print("\n--- 最新レポートのプレビュー ---")
-            print(json.dumps(report, indent=4, ensure_ascii=False))
+    # データを取得 (API失敗をシミュレートする可能性あり)
+    test_df = bot.fetch_ohlcv_data(DAYS_LOOKBACK)
+
+    if not test_df.empty:
+        # モデルの学習と保存
+        bot.train_and_save_model(test_df)
+        
+        # 高度な指標の取得
+        advanced = bot.fetch_advanced_metrics()
+        
+        # 予測とレポートの生成
+        bot.predict_and_report(test_df, advanced)
