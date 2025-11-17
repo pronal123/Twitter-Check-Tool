@@ -5,28 +5,97 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <script src="https://cdn.tailwindcss.com"></script>
     <title>{{ title }}</title>
+    <style>
+        /* スケジューラーが稼働中に点滅するアニメーション */
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: .5; }
+        }
+        .pulsing {
+            animation: pulse 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+    </style>
 </head>
 <body class="bg-gray-100 min-h-screen flex items-center justify-center p-4">
-    <div class="bg-white p-8 rounded-xl shadow-2xl max-w-2xl w-full text-center">
-        <!-- 確認アイコン -->
-        <svg xmlns="http://www.w3.org/2000/svg" class="h-12 w-12 text-blue-500 mx-auto mb-4" viewBox="0 0 20 20" fill="currentColor">
-            <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd" />
-        </svg>
-        
-        <!-- タイトル (Flaskから渡される) -->
-        <h1 class="text-3xl font-bold text-gray-800 mb-2">{{ title }}</h1>
-        
-        <!-- ステータスメッセージ -->
-        <p class="text-gray-600 mb-6">
-            レポートアプリケーションが正常に起動しました。
-            <br>
-            データがまだロードされていないか、初期化中です。
-        </p>
-        
-        <!-- デバッグ/情報メッセージ -->
-        <div id="loading-status" class="text-sm text-gray-500">
-            初期データ取得タスクの修正が必要です。（詳細は `app.py` のロジックを確認してください）
-        </div>
+    <div class="bg-white p-8 rounded-xl shadow-2xl max-w-2xl w-full">
+        <header class="text-center mb-8">
+            <!-- グラフアイコン (Tailwind CSS/Lucide-react風 SVG) -->
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-12 w-12 text-blue-600 mx-auto mb-4" viewBox="0 0 20 20" fill="currentColor">
+                <path d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5zM8 7a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7zM14 4a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z" />
+            </svg>
+            <h1 class="text-3xl font-extrabold text-gray-900">{{ title }}</h1>
+            <p id="scheduler-status" class="text-sm font-semibold mt-1 p-1 inline-block rounded-full bg-green-100 text-green-700">
+                <span class="inline-block w-2 h-2 mr-1 bg-green-500 rounded-full {{ 'pulsing' if '稼働中' in data.scheduler_status else '' }}"></span>
+                スケジューラー: {{ data.scheduler_status }}
+            </p>
+        </header>
+
+        <section class="space-y-4">
+            <div class="bg-blue-50 p-4 rounded-lg border border-blue-200">
+                <h2 class="text-xl font-bold text-blue-800 mb-2 border-b border-blue-300 pb-1">データ更新ステータス</h2>
+                <dl class="text-gray-700">
+                    <div class="flex justify-between py-1 border-b border-gray-100">
+                        <dt class="font-medium">最終更新日時:</dt>
+                        <dd id="last-updated" class="font-bold text-gray-800">{{ data.last_updated }}</dd>
+                    </div>
+                    <div class="flex justify-between py-1 border-b border-gray-100">
+                        <dt class="font-medium">取得データ期間:</dt>
+                        <dd id="data-range" class="font-semibold">{{ data.data_range }}</dd>
+                    </div>
+                    <div class="flex justify-between py-1">
+                        <dt class="font-medium">取得データ件数:</dt>
+                        <dd id="data-count" class="font-semibold text-gray-800">{{ data.data_count }} 件</dd>
+                    </div>
+                </dl>
+            </div>
+            
+            <div class="bg-yellow-50 p-4 rounded-lg border border-yellow-200">
+                <h2 class="text-xl font-bold text-yellow-800 mb-2 border-b border-yellow-300 pb-1">次のアクション</h2>
+                <p class="text-gray-700">
+                    現在、データはダミー値です。`app.py`の `fetch_data` 関数内に実際のAPI呼び出しロジックを実装してください。
+                </p>
+            </div>
+        </section>
     </div>
+
+    <script>
+        // 10秒ごとにステータスを更新する関数
+        async function updateStatus() {
+            try {
+                // 💥 修正: 相対URLのエラー回避のため、window.location.origin を使用
+                const url = window.location.origin + '/status';
+                const response = await fetch(url);
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                const data = await response.json();
+
+                // 取得したデータで表示を更新
+                document.getElementById('last-updated').textContent = data.last_updated;
+                document.getElementById('data-range').textContent = data.data_range;
+                document.getElementById('data-count').textContent = data.data_count + ' 件';
+                
+                // スケジューラーのステータスを更新し、稼働中はパルスアニメーションを付ける
+                const isRunning = data.scheduler_status.includes('稼働中');
+                document.getElementById('scheduler-status').innerHTML = `
+                    <span class="inline-block w-2 h-2 mr-1 bg-green-500 rounded-full ${isRunning ? 'pulsing' : ''}"></span>
+                    スケジューラー: ${data.scheduler_status}
+                `;
+                
+            } catch (error) {
+                console.error("ステータス更新中にエラーが発生しました:", error);
+                document.getElementById('last-updated').textContent = 'エラー (通信)';
+            }
+        }
+
+        // ページロード時と10秒ごとに更新
+        document.addEventListener('DOMContentLoaded', () => {
+            // ページ表示直後に一度実行
+            updateStatus();
+            // 以降、10秒ごとに実行
+            setInterval(updateStatus, 10000); 
+        });
+    </script>
 </body>
 </html>
