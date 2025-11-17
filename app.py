@@ -1,95 +1,172 @@
 import os
-import schedule
-import time
-from threading import Thread
+import json
+from datetime import datetime
 from flask import Flask, render_template, jsonify
-import requests
+from apscheduler.schedulers.background import BackgroundScheduler
+# dotenvは環境変数をローカルで読み込むために使用されます
+from dotenv import load_dotenv
 
-# 🚨 修正: FUTURES_SYMBOL のインポートを削除
-from futures_ml_bot import FuturesMLBot, fetch_advanced_metrics, MODEL_FILENAME
+# --- 実践的なBOTロジックと定数をインポート ---
+# futures_ml_bot.py から実際のクラスと定数をインポート
+from futures_ml_bot import (
+    FuturesMLBot, 
+    fetch_advanced_metrics, 
+    REPORT_FILENAME,
+    MODEL_FILENAME
+)
 
-# --- 初期設定 ---
-# Flaskアプリ設定
+# ローカルテスト時に .env ファイルを読み込む (デプロイ環境では通常不要)
+load_dotenv() 
+
+# --- 環境変数と設定 ---
+WEB_SERVICE_PORT = int(os.environ.get('PORT', 8080))
+RETRAIN_INTERVAL_HOURS = int(os.environ.get('RETRAIN_INTERVAL_HOURS', 24)) # 24時間ごとに再学習
+PREDICTION_INTERVAL_HOURS = int(os.environ.get('PREDICTION_INTERVAL_HOURS', 1)) # 1時間ごとに予測
+
 app = Flask(__name__)
-app.config['ENV'] = 'development'
-app.config['DEBUG'] = True
+scheduler = BackgroundScheduler()
 
-# BOT初期化
-bot = FuturesMLBot()
-
-# --- スケジューリング関数 ---
-
-def run_model_training():
-    """MLモデルの再学習を実行します。"""
-    print(f"[{time.strftime('%H:%M:%S')}] 🧠 再学習タスク開始...")
-    try:
-        df = bot.fetch_ohlcv_data()
-        bot.train_and_save_model(df)
-    except Exception as e:
-        print(f"🚨 再学習エラー: {e}")
-    finally:
-        print(f"[{time.strftime('%H:%M:%S')}] ✅ 再学習タスクが完了しました。")
-
-def run_prediction_and_report():
-    """最新データに基づき予測を行い、レポートを生成します。"""
-    print(f"[{time.strftime('%H:%M:%S')}] 🚀 予測タスク開始...")
-    try:
-        # 予測には最新のデータのみが必要
-        df = bot.fetch_ohlcv_data()
-        advanced_data = fetch_advanced_metrics()
-        bot.predict_and_report(df, advanced_data)
-    except FileNotFoundError:
-        print(f"[{time.strftime('%H:%M:%S')}] ⚠️ モデルファイル '{MODEL_FILENAME}' が存在しません。予測をスキップし、再学習待ち。")
-    except Exception as e:
-        print(f"🚨 予測/レポート生成エラー: {e}")
-    finally:
-        print(f"[{time.strftime('%H:%M:%S')}] ✅ 予測タスクが完了しました。")
-
-# --- スケジューラ起動ロジック ---
-
-def run_scheduler():
-    """スケジュールに従ってタスクを実行するスレッド関数。"""
-    # 初回起動時に強制実行 (データがないと予測ができないため)
-    print(f"[{time.strftime('%H:%M:%S')}] 🚀 初回モデル構築を強制実行中...")
-    run_model_training()
+# 🚨 BOTの初期化 (グローバルインスタンス)
+bot = None
+try:
+    # FuturesMLBotが初期化時にモデルのロードを試みます
+    bot = FuturesMLBot() 
+except Exception as e:
+    # 致命的なエラーログ
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] 🚨 致命的なBOT初期化エラー: {e}")
     
-    print(f"[{time.strftime('%H:%M:%S')}] 🚀 初回レポートを強制実行中...")
-    run_prediction_and_report()
+# --- 予測実行タスク (定時) ---
+def run_prediction_and_report_generation():
+    """予測を実行し、REPORT_FILENAMEにJSONレポートを保存する関数。"""
+    if bot is None:
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] 🚨 BOTインスタンスがありません。タスクスキップ。")
+        return
 
-    # スケジュール設定
-    # 日足分析なので、モデル再学習は毎日、予測レポートも毎日1回で十分ですが、
-    # 動作確認のため、予測を1時間ごと、再学習を24時間ごとにしておきます。
-    schedule.every(24).hours.do(run_model_training)
-    schedule.every(1).hour.do(run_prediction_and_report)
+    try:
+        # モデルファイルが存在しない場合は、予測をスキップ
+        if not os.path.exists(MODEL_FILENAME):
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ モデルファイルが存在しません。予測をスキップし、再学習待ち。")
+            return
 
-    print(f"[{time.strftime('%H:%M:%S')}] ✅ スケジューラが起動しました。予測:1時間ごと, 再学習:24時間ごと")
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚙️ 予測タスク開始...")
+        
+        # NOTE: fetch_advanced_metricsは futures_ml_bot.py で引数なしのダミー実装のため、そのまま呼び出し
+        advanced_data = fetch_advanced_metrics() 
+        
+        # 最新のOHLCVデータを取得 (100期間)
+        # NOTE: FuturesMLBotがfetch_ohlcv_dataを持つようになりました
+        df_latest = bot.fetch_ohlcv_data(days=100) 
+        
+        # 予測を実行し、レポートJSONを生成・保存
+        bot.predict_and_report(df_latest, advanced_data)
+        
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ 予測・レポート生成タスク完了。")
+             
+    except Exception as e:
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] 🚨 予測タスクエラー: {e}")
+
+# --- モデル再学習タスク (定時) ---
+def run_retrain_and_save():
+    """モデルの再学習と構築を行う関数。"""
+    if bot is None:
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] 🚨 BOTインスタンスがありません。再学習スキップ。")
+        return
+        
+    try:
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] 🧠 再学習タスク開始...")
+        
+        # モデル学習のための長期データ (900期間) を取得
+        df_long_term = bot.fetch_ohlcv_data(days=900) 
+        # モデルを学習し、ファイルに保存
+        bot.train_and_save_model(df_long_term)
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ 再学習タスク完了。")
+        
+    except Exception as e:
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] 🚨 致命的な再学習タスクエラーが発生しました: {e}")
+
+
+# --- スケジューラの初期化と起動 ---
+def start_scheduler():
+    """APSchedulerを設定し、バックグラウンドで開始する"""
+    if bot is None:
+        print("⚠️ BOT初期化失敗のため、スケジューラは起動しません。")
+        return
+
+    print("--- スケジューラ設定開始 ---")
+
+    # 🚨 【重要】BOT起動時に、最初の予測の前に必ずモデルを初回学習する
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] 🚀 初回モデル構築を強制実行中...")
+    run_retrain_and_save()
+    print("✅ 初回モデル構築完了。")
     
-    while True:
-        schedule.run_pending()
-        time.sleep(1)
+    # 初回学習完了後、予測を実行
+    run_prediction_and_report_generation()
+    print("✅ 初回予測完了。")
 
-# --- Flask Webサーバー ---
+
+    # ジョブの追加
+    scheduler.add_job(func=run_prediction_and_report_generation, trigger='interval', hours=PREDICTION_INTERVAL_HOURS, id='prediction_job')
+    scheduler.add_job(func=run_retrain_and_save, trigger='interval', hours=RETRAIN_INTERVAL_HOURS, id='retrain_job')
+
+    scheduler.start()
+    print(f"✅ スケジューラ起動済み。予測:{PREDICTION_INTERVAL_HOURS}時間ごと, 再学習:{RETRAIN_INTERVAL_HOURS}時間ごと")
+    
+# --- Flask Webサーバーのルーティング ---
 
 @app.route('/')
 def index():
-    return render_template('index.html', title="ML-Powered Futures BOT Analysis Report")
+    """メインダッシュボード (index.html) をレンダリングする"""
+    return render_template('index.html', title="ML活用先物BOT分析レポート")
+
+@app.route('/get_report')
+def get_report():
+    """最新の予測レポートJSONデータを返すエンドポイント。"""
+    if not os.path.exists(REPORT_FILENAME):
+         # レポートファイルが存在しない場合
+         return jsonify({
+             "status": "error", 
+             "message": "レポートはまだ生成されていません。初期の学習と予測が完了するまでお待ちください。"
+         }), 503
+    
+    try:
+        with open(REPORT_FILENAME, 'r', encoding='utf-8') as f:
+            report_data = json.load(f)
+        return jsonify(report_data)
+    except Exception as e:
+        # JSONパースエラーなど、ファイルの読み込み中にエラーが発生した場合
+        return jsonify({
+            "status": "error", 
+            "message": f"レポートデータの読み込み中にエラーが発生しました: {str(e)}"
+        }), 500
 
 @app.route('/report_status')
 def report_status():
-    # 簡易ステータスチェック
+    """スケジューラーのステータス情報と次回の実行時間を返すエンドポイント。"""
+    jobs = scheduler.get_jobs()
+    
+    # 次の予測実行時間を検索
+    next_prediction_run = "N/A"
+    next_training_run = "N/A"
+    
+    for job in jobs:
+        if job.id == 'prediction_job' and job.next_run_time:
+            next_prediction_run = job.next_run_time.strftime('%Y-%m-%d %H:%M:%S JST')
+        if job.id == 'retrain_job' and job.next_run_time:
+            next_training_run = job.next_run_time.strftime('%Y-%m-%d %H:%M:%S JST')
+
     status = {
-        'status': 'Running',
-        'last_update': time.strftime('%Y-%m-%d %H:%M:%S JST'),
-        'next_report': schedule.next_run().strftime('%Y-%m-%d %H:%M:%S JST')
+        'status': '稼働中 (Scheduler running)',
+        'last_update': datetime.now().strftime('%Y-%m-%d %H:%M:%S JST'),
+        'next_prediction': next_prediction_run,
+        'next_training': next_training_run
     }
     return jsonify(status)
 
-# メイン実行ブロック
+# --- メイン実行ブロック ---
 if __name__ == '__main__':
-    # スケジューラをバックグラウンドスレッドで起動
-    scheduler_thread = Thread(target=run_scheduler, daemon=True)
-    scheduler_thread.start()
+    # スケジューラを同期的に起動してから、Flaskアプリをメインスレッドで実行
+    start_scheduler()
     
-    # Flaskサーバーを起動
-    # developmentサーバーはシングルスレッドなので、schedulerを別スレッドで動かすのが安全
-    app.run(host='0.0.0.0', port=8080, use_reloader=False)
+    print("🌐 Flask Webサーバーを起動中...")
+    # use_reloader=False は、APSchedulerが二重起動するのを防ぐために推奨されます。
+    app.run(host='0.0.0.0', port=WEB_SERVICE_PORT, use_reloader=False)
