@@ -1,10 +1,9 @@
 pandas
-ccxt
 pandas-ta
 scikit-learn
 numpy
 requests
 joblib
 Flask
-APScheduler
+schedule
 python-dotenv
