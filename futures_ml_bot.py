@@ -1,4 +1,4 @@
-# futures_ml_bot.py (MEXC分析強化版 / 即時通知対応 / 特徴量大幅追加)
+# futures_ml_bot.py (Binanceデータ取得 / 分析強化版 / 即時通知対応)
 
 import os
 import ccxt
@@ -46,8 +46,8 @@ def fetch_advanced_metrics() -> Dict[str, Any]:
 # --- 3. メインBOTクラス ---
 class FuturesMLBot:
     def __init__(self):
-        # MEXC公開APIインスタンス
-        self.exchange = ccxt.mexc({
+        # 🚨 変更点: データ取得元を安定性の高いBinanceに変更
+        self.exchange = ccxt.binance({
             'options': {'defaultType': 'future'},
             'enableRateLimit': True,
         })
@@ -58,22 +58,26 @@ class FuturesMLBot:
 
     # --- (A) データ取得 (OHLCV) ---
     def fetch_ohlcv_data(self, limit: int = 2000, timeframe: str = TIMEFRAME) -> pd.DataFrame:
-        """OHLCVデータをMEXC公開APIから取得します。"""
+        """OHLCVデータをBinance公開APIから取得します。"""
         try:
-            ohlcv = self.exchange.fetch_ohlcv(FUTURES_SYMBOL, timeframe, limit=limit)
+            # 🚨 変更点: Binanceの先物シンボル形式を使用
+            binance_symbol = FUTURES_SYMBOL.replace('/', '')
+            
+            ohlcv = self.exchange.fetch_ohlcv(binance_symbol, timeframe, limit=limit)
             if not ohlcv:
                 print("🚨 OHLCVデータが空です。")
                 return pd.DataFrame()
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'Open', 'High', 'Low', 'Close', 'Volume'])
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
             df.set_index('timestamp', inplace=True)
-            print(f"✅ MEXCから{len(df)}件のOHLCVデータを取得しました。")
+            print(f"✅ Binanceから{len(df)}件のOHLCVデータを取得しました。")
             return df
         except Exception as e:
-            print(f"🚨 OHLCVデータ取得エラー (MEXC公開APIを使用中): {e}")
+            # 🚨 報告内容をBinance用に変更
+            print(f"🚨 OHLCVデータ取得エラー (Binance公開APIを使用中): {e}")
             return pd.DataFrame()
 
-    # --- (B) 特徴量作成 (大幅に強化) ---
+    # --- (B) 特徴量作成 (分析強化版を維持) ---
     def create_ml_features(self, df: pd.DataFrame, advanced_data: Dict[str, Any] = None) -> Tuple[pd.DataFrame, pd.Series]:
         """ボラティリティ、モメンタム、トレンド、センチメントを含む高度な特徴量を作成"""
         if df.empty:
@@ -82,37 +86,34 @@ class FuturesMLBot:
         # --- トレンド指標 ---
         df['SMA20'] = ta.sma(df['Close'], length=20)
         df['SMA50'] = ta.sma(df['Close'], length=50)
-        df['Trend_Signal'] = np.where(df['SMA20'] > df['SMA50'], 1, -1) # 短期 > 長期 = 1 (上昇トレンド)
+        df['Trend_Signal'] = np.where(df['SMA20'] > df['SMA50'], 1, -1) 
         
         # --- モメンタム指標 ---
         df['RSI'] = ta.rsi(df['Close'], length=14)
         df['MACD_H'] = ta.macd(df['Close'])['MACDh_12_26_9']
-        df['StochRSI_K'] = ta.stochrsi(df['Close'])['STOCHRSId_14_14_3_3'] # Stochastic RSI
-        df['Momentum'] = ta.mom(df['Close'], length=10) # 10期間モメンタム
+        df['StochRSI_K'] = ta.stochrsi(df['Close'])['STOCHRSId_14_14_3_3']
+        df['Momentum'] = ta.mom(df['Close'], length=10)
         
         # --- ボラティリティ指標 ---
         df['ATR'] = ta.atr(df['High'], df['Low'], df['Close'], length=14) 
-        df['BBands_Width'] = ta.bbands(df['Close'])['BBP_20_2.0'] # Bollinger Band Percent B (Percent B)
-        df['Keltner_Width'] = (ta.kc(df['High'], df['Low'], df['Close'])['KCBu_20_2.0'] - ta.kc(df['High'], df['Low'], df['Close'])['KCLl_20_2.0']) / df['Close'] # Keltner Channel Width Normalized
+        df['BBands_Width'] = ta.bbands(df['Close'])['BBP_20_2.0']
+        df['Keltner_Width'] = (ta.kc(df['High'], df['Low'], df['Close'])['KCBu_20_2.0'] - ta.kc(df['High'], df['Low'], df['Close'])['KCLl_20_2.0']) / df['Close']
         
         # --- ボリューム指標 ---
         df['Volume_SMA'] = ta.sma(df['Volume'], length=20)
-        df['Volume_ROC'] = df['Volume'].pct_change(1) # Volume Rate of Change
+        df['Volume_ROC'] = df['Volume'].pct_change(1)
         
         # --- 価格変化率 ---
-        for lag in [1, 2, 3, 5]: # ラグの数を増やす
+        for lag in [1, 2, 3, 5]: 
             df[f'Price_L{lag}'] = df['Close'].pct_change(lag).shift(lag)
             
-        # --- センチメント指標 (予測時のみ使用) ---
+        # --- センチメント指標 ---
         if advanced_data:
-            # F&G Indexを特徴量として追加
             df['FG_Index'] = advanced_data.get('fg_index', 50)
         else:
-            # 学習データ生成時は、最新のF&G Indexは未来情報となるため、50で埋めるか、より堅牢な方法を使う
-            # 今回は学習データとして使うには危険なため、予測時のみ使うようにリストから除外
             pass
 
-        # 予測対象（Target）: 次の1時間で設定した閾値以上動くか (+1: 上昇, -1: 下落, 0: レンジ)
+        # 予測対象（Target）
         future_change = df['Close'].pct_change(periods=-self.prediction_period).shift(self.prediction_period)
         
         df['Target'] = np.select(
@@ -122,15 +123,12 @@ class FuturesMLBot:
         
         df.dropna(inplace=True)
         
-        # 特徴量カラムリストの更新
         if not self.feature_cols and not df.empty:
             cols = [col for col in df.columns if col not in ['Open', 'High', 'Low', 'Close', 'Volume', 'Target', 'timestamp', 'SMA20', 'SMA50']]
             self.feature_cols = [col for col in cols if df[col].dtype in [np.float64, np.int64]]
         
-        # 学習時にはFG_Indexは含めない (未来情報混入防止)
         self.feature_cols = [col for col in self.feature_cols if col != 'FG_Index']
         
-        # 予測時、FG_Indexが追加された場合は特徴量リストに追加する
         if advanced_data and 'FG_Index' not in self.feature_cols:
              if 'FG_Index' in df.columns:
                  self.feature_cols.append('FG_Index')
@@ -140,7 +138,7 @@ class FuturesMLBot:
             
         return df[self.feature_cols], df['Target']
 
-    # --- (C) モデル学習 ---
+    # --- (C) モデル学習 (維持) ---
     def train_and_save_model(self, df_long_term: pd.DataFrame) -> bool:
         print("🧠 モデルの再学習タスクを開始...")
         # 学習時にはadvanced_data (FG_Index) を渡さない
@@ -158,7 +156,7 @@ class FuturesMLBot:
         print("✅ モデルの再学習が完了し、ファイルに保存されました。")
         return True
 
-    # --- (D) 予測とレポート ---
+    # --- (D) 予測とレポート (維持) ---
     def predict_and_report(self, df_latest: pd.DataFrame, advanced_data: Dict[str, Any]) -> bool:
         """最新データに基づいて予測を行い、レポートを生成し、Telegramに送信する。"""
         if df_latest.empty:
@@ -200,11 +198,10 @@ class FuturesMLBot:
         
         return True
     
-    # --- レポート生成のためのヘルパー関数 (洞察力強化) ---
+    # --- レポート生成のためのヘルパー関数 (洞察力強化を維持) ---
     def _determine_market_regime(self, price: float, sma20: float, sma50: float, atr: float, bbp: float) -> Tuple[str, str, str]:
         """SMAとボラティリティ指標を用いて市場構造とトレンドを判断する"""
         
-        # トレンド判断
         if sma20 > sma50:
             trend_type = "中期上昇トレンド"
             trend_emoji = "⬆️"
@@ -216,8 +213,7 @@ class FuturesMLBot:
             trend_emoji = "➖"
 
         # ボラティリティ判断
-        is_high_vol = atr > (atr * 1.5) # 過去平均ATRとの比較など、より詳細なロジックを組むことも可能だが、今回はシンプルに
-        is_tight_range = bbp < 0.2 and bbp > -0.2 # ボリンジャーバンドの収縮を示す
+        is_tight_range = bbp < 0.2 and bbp > -0.2
         
         if is_tight_range:
             regime_status = "ブレイクアウト前夜 (ボラティリティ収縮)"
@@ -261,13 +257,10 @@ class FuturesMLBot:
         """ML予測と実データを統合し、最高峰の分析レポートを生成する。"""
         
         price = latest_price_data['Close']
-        high = latest_price_data['High']
-        low = latest_price_data['Low']
-        
         sma20 = latest_features.get('SMA20', price)
         sma50 = latest_features.get('SMA50', price)
         atr = latest_features.get('ATR', price * 0.01)
-        bbp = latest_features.get('BBands_Width', 0) # Percent Bを代用
+        bbp = latest_features.get('BBands_Width', 0)
         rsi = latest_features.get('RSI', 50)
         
         pred_map = {-1: "📉 下落", 0: "↔️ レンジ", 1: "📈 上昇"}
@@ -336,8 +329,12 @@ class FuturesMLBot:
 <b>利確目標 (TP):</b> R1/S1の反対側の極値
 """
         
+        # 🚨 変更点: レポートタイトルからMEXCを削除し、データ取得元を明記
         report = f"""
-<b>【👑 BTC MEXC 1時間足 分析強化レポート 👑】</b>
+<b>【👑 BTC 先物 1時間足 分析強化レポート 👑】</b>
+<p>
+    <i>(注: データ取得元: Binance Futures)</i>
+</p>
 📅 <b>{current_time}</b> | <b>{TIMEFRAME}足分析</b> (次期予測: 1時間後)
 <p>
     <b>現在の市場構造:</b> <b>{regime_emoji} {regime_status}</b> | <b>中期トレンド: {trend_type} {trend_emoji}</b>
