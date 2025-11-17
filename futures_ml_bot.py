@@ -1,4 +1,4 @@
-# futures_ml_bot.py (Binanceデータ取得 / 分析強化版 / 即時通知対応)
+# futures_ml_bot.py (Bybitデータ取得 / 分析強化版 / 即時通知対応)
 
 import os
 import ccxt
@@ -32,6 +32,7 @@ def fetch_advanced_metrics() -> Dict[str, Any]:
         'fg_value': 'Neutral (API失敗)'
     }
     try:
+        # F&G Indexは安定して取得できることを確認済
         fg_response = requests.get(FG_INDEX_API_URL, timeout=5)
         fg_response.raise_for_status()
         fg_data = fg_response.json().get('data', [{}])
@@ -46,8 +47,8 @@ def fetch_advanced_metrics() -> Dict[str, Any]:
 # --- 3. メインBOTクラス ---
 class FuturesMLBot:
     def __init__(self):
-        # 🚨 変更点: データ取得元を安定性の高いBinanceに変更
-        self.exchange = ccxt.binance({
+        # 🚨 変更点: データ取得元をBybitに変更
+        self.exchange = ccxt.bybit({
             'options': {'defaultType': 'future'},
             'enableRateLimit': True,
         })
@@ -58,23 +59,21 @@ class FuturesMLBot:
 
     # --- (A) データ取得 (OHLCV) ---
     def fetch_ohlcv_data(self, limit: int = 2000, timeframe: str = TIMEFRAME) -> pd.DataFrame:
-        """OHLCVデータをBinance公開APIから取得します。"""
+        """OHLCVデータをBybit公開APIから取得します。"""
         try:
-            # 🚨 変更点: Binanceの先物シンボル形式を使用
-            binance_symbol = FUTURES_SYMBOL.replace('/', '')
-            
-            ohlcv = self.exchange.fetch_ohlcv(binance_symbol, timeframe, limit=limit)
+            # Bybitの先物シンボル形式は通常 'BTC/USDT' で動作
+            ohlcv = self.exchange.fetch_ohlcv(FUTURES_SYMBOL, timeframe, limit=limit)
             if not ohlcv:
                 print("🚨 OHLCVデータが空です。")
                 return pd.DataFrame()
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'Open', 'High', 'Low', 'Close', 'Volume'])
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
             df.set_index('timestamp', inplace=True)
-            print(f"✅ Binanceから{len(df)}件のOHLCVデータを取得しました。")
+            print(f"✅ Bybitから{len(df)}件のOHLCVデータを取得しました。")
             return df
         except Exception as e:
-            # 🚨 報告内容をBinance用に変更
-            print(f"🚨 OHLCVデータ取得エラー (Binance公開APIを使用中): {e}")
+            # 🚨 報告内容をBybit用に変更
+            print(f"🚨 OHLCVデータ取得エラー (Bybit公開APIを使用中): {e}")
             return pd.DataFrame()
 
     # --- (B) 特徴量作成 (分析強化版を維持) ---
@@ -329,11 +328,11 @@ class FuturesMLBot:
 <b>利確目標 (TP):</b> R1/S1の反対側の極値
 """
         
-        # 🚨 変更点: レポートタイトルからMEXCを削除し、データ取得元を明記
+        # 🚨 変更点: レポートタイトルをBybitデータ取得に修正
         report = f"""
 <b>【👑 BTC 先物 1時間足 分析強化レポート 👑】</b>
 <p>
-    <i>(注: データ取得元: Binance Futures)</i>
+    <i>(注: データ取得元: Bybit Futures)</i>
 </p>
 📅 <b>{current_time}</b> | <b>{TIMEFRAME}足分析</b> (次期予測: 1時間後)
 <p>
