@@ -1,7 +1,7 @@
 # futures_ml_bot.py (代替データソースと擬似OHLCV生成版 / 分析強化版)
 
 import os
-import ccxt
+# ccxtは使用せず、requestsで直接外部APIを叩きます
 import pandas as pd
 import pandas_ta as ta
 import numpy as np
@@ -17,7 +17,7 @@ from typing import Tuple, Dict, Any, List
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
 
-TIMEFRAME = '1d' # 🚨 変更: 安定化のため分析単位を日足に変更
+TIMEFRAME = '1d' # 🚨 分析単位を日足に変更
 MODEL_FILENAME = 'btc_futures_ml_model.joblib'
 
 # 外部APIエンドポイント (CoinGecko & Fear & Greed Index)
@@ -47,7 +47,7 @@ def fetch_advanced_metrics() -> Dict[str, Any]:
 # --- 3. メインBOTクラス ---
 class FuturesMLBot:
     def __init__(self):
-        # CCXTは使用しないため、インスタンス化を削除
+        # 取引所インスタンスの依存を削除
         self.target_threshold = 0.01 # 日足のため閾値を1.0%に変更
         self.prediction_period = 1 # 次の日の予測
         self.feature_cols: List[str] = [] 
@@ -80,6 +80,7 @@ class FuturesMLBot:
             # 2. High/Lowの生成 (Closeに対するランダムなボラティリティを付与)
             # 過去の価格変動に基づきボラティリティのノイズを生成
             vol_multiplier = 0.03 # 日次で3%程度のボラティリティを想定
+            np.random.seed(int(time.time())) # シードを動的に設定
             df['High_Noise'] = np.abs(np.random.normal(0, vol_multiplier * 0.5, len(df)))
             df['Low_Noise'] = np.abs(np.random.normal(0, vol_multiplier * 0.5, len(df)))
             
@@ -88,17 +89,17 @@ class FuturesMLBot:
             df['Low'] = df[['Open', 'Close']].min(axis=1) * (1 - df['Low_Noise'])
             
             # 3. Volumeの生成 (F&G Indexと逆相関のノイズを組み合わせて近似)
-            # 出来高は「恐怖時(F&G Index低)に増える」という傾向をモデル化
-            fg_data = fetch_advanced_metrics()
-            fg_index = fg_data.get('fg_index', 50)
-            
             # 出来高のベース（Market Capから推測）
             volume_base = np.random.randint(200000, 500000, len(df))
             
             # センチメント補正 (F&Gが低いほど補正値が高くなる)
-            sentiment_boost = (100 - df.index.to_series().apply(lambda x: fg_index)) / 50 
+            # F&G Indexは時系列データではないため、最新のFG Indexを取得し、Volumeのノイズとして利用
+            fg_data = fetch_advanced_metrics()
+            fg_index_value = fg_data.get('fg_index', 50)
             
-            df['Volume'] = (volume_base * sentiment_boost).round(0)
+            # 出来高のベースラインにF&Gに基づくノイズを加える
+            volume_noise_factor = (100 - fg_index_value) / 50 
+            df['Volume'] = (volume_base * volume_noise_factor).round(0)
             
             # データの整形と不要行の削除
             df = df[['Open', 'High', 'Low', 'Close', 'Volume']].dropna()
@@ -166,7 +167,7 @@ class FuturesMLBot:
             
         # --- センチメント指標 ---
         if advanced_data:
-            # 最新のF&G Indexをすべての行に適用する（時系列データではないため）
+            # 最新のF&G Indexをすべての行に適用する
             df['FG_Index'] = advanced_data.get('fg_index', 50)
         else:
             pass
@@ -302,6 +303,7 @@ class FuturesMLBot:
             risk_color = "⚪️"
 
         core_risks = []
+        # 🚨 警告を明確化
         core_risks.append(f"<b>データ推定:</b> OHLCVデータはCoinGecko終値と統計ノイズによる<b>推定値</b>です。")
         if fg_index >= 75:
             core_risks.append("<b>過熱警告:</b> FGIが極端に高い水準。強気派は慎重なリスク管理が必要です。")
