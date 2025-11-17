@@ -5,5 +5,5 @@ numpy
 requests
 joblib
 Flask
-schedule
+Flask-APScheduler  # 修正: 必要なスケジューラライブラリ
 python-dotenv
