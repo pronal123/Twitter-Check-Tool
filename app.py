@@ -20,8 +20,6 @@ def fetch_data(days_ago=900):
         logging.info(f"APIから過去 {days_ago} 日間のデータ取得を試行中...")
         
         # 修正されたdatetimeの使用例 (エラーの原因箇所を修正)
-        # 以前は 'datetime.datetime.now()' のように呼び出されていたが、
-        # 'datetime' モジュールがインポートされていなかったと推測されます。
         
         end_date = datetime.datetime.now()
         start_date = end_date - datetime.timedelta(days=days_ago)
@@ -48,13 +46,14 @@ def update_report_task():
 # -----------------
 # Flaskアプリケーション本体
 # -----------------
-app = Flask(__name__)
+# 💥 階層修正: template_folder='./' を追加し、テンプレートフォルダをapp.pyと同じ階層に設定します。
+# これにより、templates/index.html ではなく index.html を app.py と同じフォルダに配置できます。
+app = Flask(__name__, template_folder='./')
 logging.info("🤖 FuturesMLBot初期化完了。")
 
 @app.route('/')
 def index():
-    # テンプレートが見つからないエラー (TemplateNotFound) は、
-    # templates/index.html を作成することで解決されます。
+    # index.htmlをapp.pyと同じ階層からロードします。
     return render_template('index.html', title='ML活用先物BOT分析レポート')
 
 # -----------------
