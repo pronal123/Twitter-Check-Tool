@@ -76,6 +76,7 @@ global_data = {
     'current_price': 0,
     'strategy': 'データ処理中',
     'bias': 'N/A',
+    'dominance': 'N/A', # 新しい優勢度フィールド
     'predictions': {},
     'backtest': {} # バックテスト結果を格納
 }
@@ -89,6 +90,7 @@ def send_telegram_message(message):
         logging.warning("⚠️ Telegram BOT TOKENまたはCHAT IDが設定されていません。通知をスキップします。")
         return
     try:
+        # Markdownを使用 (V2ではないため、\n\nでセクション区切りを確実にする)
         response = requests.post(
             TELEGRAM_API_URL_MESSAGE,
             data={'chat_id': TELEGRAM_CHAT_ID, 'text': message, 'parse_mode': 'Markdown'},
@@ -97,6 +99,7 @@ def send_telegram_message(message):
         response.raise_for_status()
         logging.info("✅ Telegramメッセージの送信成功。")
     except requests.exceptions.HTTPError as http_err:
+        # HTTP 400エラーの場合、Markdownのパースエラーの可能性
         logging.error(f"❌ Telegram Message HTTPエラーが発生しました: {http_err} - 応答: {response.text}")
     except requests.exceptions.RequestException as req_err:
         logging.error(f"❌ Telegram Message API接続エラーが発生しました: {req_err}")
@@ -174,12 +177,12 @@ def fetch_btc_ohlcv_data(period: str, interval: str) -> pd.DataFrame:
 
 def analyze_data(df: pd.DataFrame) -> pd.DataFrame:
     """
-    取得したデータフレームにテクニカル指標（MA, RSI, MACD, BB）を追加します。
+    取得したデータフレームにテクニカル指標（MA, RSI, MACD, BB, Stoachastics）を追加します。
     """
     if df.empty:
         return df
 
-    # --- [改良点] テクニカル指標の追加と強化 ---
+    # テクニカル指標の追加
     df.ta.sma(length=50, append=True) # 中期トレンド
     df.ta.sma(length=200, append=True) # 長期トレンド
     df.ta.rsi(length=14, append=True) # 過熱感
@@ -211,10 +214,9 @@ def calculate_pivot_levels(df: pd.DataFrame, pivot_type: str = 'Classic') -> tup
         R2 = P + (H - L)
         S2 = P - (H - L)
     elif pivot_type == 'Fibonacci':
-        # フィボナッチピボットはレンジ相場や短期トレードでよく使用される
+        # フィボナッチピボット
         P = (H + L + C) / 3
         
-        # フィボナッチレベルの計算 (強気・弱気に関わらず同じ係数を使用)
         R1 = P + 0.382 * (H - L)
         S1 = P - 0.382 * (H - L)
         R2 = P + 0.618 * (H - L)
@@ -248,11 +250,8 @@ def backtest_strategy(df: pd.DataFrame, initial_capital: float = BACKTEST_CAPITA
     entry_price = 0.0
     trades = []
     
-    # バックテスト開始時の資本を記録
     capital_history = [initial_capital]
 
-    # データフレームをループし、取引をシミュレーション
-    # 最初のMA/RSIが計算できない期間をスキップするため、1から開始
     for i in range(1, len(df_clean)):
         current_data = df_clean.iloc[i]
         close = current_data['Close']
@@ -260,14 +259,16 @@ def backtest_strategy(df: pd.DataFrame, initial_capital: float = BACKTEST_CAPITA
         # --- 既にポジションを持っている場合 (エグジット条件) ---
         if position > 0: # 買いポジション (ロング) の場合
             # 売りシグナル（MA50を下にクロス、またはRSIが買われすぎ反転）でエグジット
+            # 修正: MA50を下回った、またはRSIの過熱感から反転
             if close < current_data[MA_COL] * 0.995 or current_data[RSI_COL] > 75: 
-                profit = (close - entry_price) * position # 利益を計算 (ポジションサイズ * 差額)
+                profit = (close - entry_price) * position # 利益を計算
                 capital += profit
                 trades.append({'type': 'LONG', 'entry': entry_price, 'exit': close, 'profit': profit})
                 position = 0.0
         
         elif position < 0: # 売りポジション (ショート) の場合
             # 買いシグナル（MA50を上にクロス、またはRSIが売られすぎ反転）でエグジット
+            # 修正: MA50を上回った、またはRSIの売られすぎから反転
             if close > current_data[MA_COL] * 1.005 or current_data[RSI_COL] < 25:
                 profit = (entry_price - close) * abs(position) # 利益を計算 (ショートは逆算)
                 capital += profit
@@ -287,8 +288,7 @@ def backtest_strategy(df: pd.DataFrame, initial_capital: float = BACKTEST_CAPITA
                 position = - (capital * 0.5 / close) # ショートポジション
                 entry_price = close
         
-        # 各足での資本状況を記録
-        # 注: ポジションがある場合は未決済の含み益/含み損を考慮してEquityを計算
+        # 各足での資本状況を記録 (未決済ポジションの含み益/含み損を考慮)
         current_equity = capital + (close - entry_price) * position if position != 0 else capital
         capital_history.append(current_equity)
 
@@ -337,7 +337,7 @@ def backtest_strategy(df: pd.DataFrame, initial_capital: float = BACKTEST_CAPITA
 
 def generate_strategy(df_long: pd.DataFrame, df_short: pd.DataFrame) -> dict:
     """
-    日足と4時間足のテクニカル指標に基づいて、総合的な戦略と予測を決定します。
+    日足と4時間足のテクニカル指標に基づいて、総合的な戦略と予測、市場の優勢度を決定します。
     """
     df_long_clean = df_long.dropna()
     df_short_clean = df_short.dropna()
@@ -347,21 +347,19 @@ def generate_strategy(df_long: pd.DataFrame, df_short: pd.DataFrame) -> dict:
         price = df_long['Close'].iloc[-1] if not df_long.empty and 'Close' in df_long.columns else 0
         return {
             'price': price, 'P': price, 'R1': price * 1.01, 'S1': price * 0.99, 'MA50': price, 'RSI': 50,
-            'bias': 'データ不足',
+            'bias': 'データ不足', 'dominance': 'N/A', # 初期値
             'strategy': '分析に必要な十分な期間のデータが揃っていません。',
             'details': ['分析に必要な十分な期間のデータが揃っていません。'],
             'predictions': {'1h': 'N/A', '4h': 'N/A', '12h': 'N/A', '24h': 'N/A'}
         }
 
     latest = df_long_clean.iloc[-1]
-    # prev_latest = df_long_clean.iloc[-2] # 未使用のためコメントアウト
-
+    
     # 日足の指標値
     price = latest['Close']
     ma50 = latest['SMA_50']
     ma200 = latest['SMA_200']
     rsi = latest['RSI_14']
-    # macd_h = latest['MACDh_12_26_9'] # 未使用のためコメントアウト
 
     # ピボットポイントの計算 (日足データでクラシックピボットを使用)
     P_long, R1_long, S1_long, _, _ = calculate_pivot_levels(df_long, 'Classic')
@@ -370,7 +368,6 @@ def generate_strategy(df_long: pd.DataFrame, df_short: pd.DataFrame) -> dict:
     latest_short = df_short_clean.iloc[-1]
     P_short, R1_short, S1_short, _, _ = calculate_pivot_levels(df_short, 'Fibonacci')
     short_ma50 = latest_short['SMA_50']
-    # short_rsi = latest_short['RSI_14'] # 未使用のためコメントアウト
 
     # 総合バイアスと戦略の決定
     bias = "中立"
@@ -404,26 +401,6 @@ def generate_strategy(df_long: pd.DataFrame, df_short: pd.DataFrame) -> dict:
         details.append("• *モメンタム*: MACDがシグナルラインの下にあり、モメンタムは*下降*傾向です。")
         bear_score += 1
 
-    # MACDヒストグラムの簡易ダイバージェンスチェック 
-    if len(df_long_clean) >= 5:
-        # 過去5期間のデータを取得
-        recent_data = df_long_clean.iloc[-5:]
-        
-        # 弱気ダイバージェンス: 価格の高値更新なし ＆ MACDの上昇
-        price_higher = recent_data['Close'].iloc[-1] > recent_data['Close'].iloc[-2]
-        macd_higher = recent_data['MACD_12_26_9'].iloc[-1] > recent_data['MACD_12_26_9'].iloc[-2]
-
-        if not price_higher and macd_higher:
-            details.append("• ⚠️ *弱気ダイバージェンスの可能性*: 価格の高値更新なしに対し、MACDが上昇しており、モメンタムの弱まりを示唆します。")
-        
-        # 強気ダイバージェンス: 価格の安値更新なし ＆ MACDの下降
-        price_lower = recent_data['Close'].iloc[-1] < recent_data['Close'].iloc[-2]
-        macd_lower = recent_data['MACD_12_26_9'].iloc[-1] < recent_data['MACD_12_26_9'].iloc[-2]
-        
-        if not price_lower and macd_lower:
-             details.append("• ⚠️ *強気ダイバージェンスの可能性*: 価格の安値更新なしに対し、MACDが下降しており、モメンタムの強まりを示唆します。")
-
-
     # --- 3. 過熱感 (RSI) ---
     if rsi > 70:
         details.append(f"• *RSI*: 70 (`{rsi:,.2f}`) を超え、*買われすぎ*を示唆。短期的な調整（利確売り）に警戒。")
@@ -437,19 +414,25 @@ def generate_strategy(df_long: pd.DataFrame, df_short: pd.DataFrame) -> dict:
         details.append(f"• *RSI*: 50 (`{rsi:,.2f}`) を下回り、弱いモメンタムが*継続*しています。")
 
     # --- 4. 総合バイアスの決定 ---
-    if bull_score > bear_score + 1:
+    score_diff = bull_score - bear_score
+    
+    if score_diff >= 3:
+        dominance = "明確なロング優勢 🚀"
         bias = "強い上昇"
-    elif bull_score > bear_score:
+    elif score_diff == 2:
+        dominance = "ロング優勢 📈"
         bias = "上昇"
-    elif bear_score > bull_score + 1:
+    elif score_diff <= -3:
+        dominance = "明確なショート優勢 💥"
         bias = "強い下降"
-    elif bear_score > bull_score:
+    elif score_diff == -2:
+        dominance = "ショート優勢 📉"
         bias = "下降"
     else:
+        dominance = "中立/レンジ ↔️"
         bias = "レンジ/中立"
 
     # --- 5. 総合戦略の決定 ---
-    # ピボットとレジスタンス/サポートをフォーマット
     R1_long_str = f"`${R1_long:,.2f}`"
     S1_long_str = f"`${S1_long:,.2f}`"
     P_long_str = f"`${P_long:,.2f}`"
@@ -457,26 +440,21 @@ def generate_strategy(df_long: pd.DataFrame, df_short: pd.DataFrame) -> dict:
     R1_short_str = f"`${R1_short:,.2f}`"
 
 
-    if bias in ["強い上昇", "上昇"]:
-        # 長期的な強気トレンドで、短期（4h）もMA50を上回っているなら、最も強い買い戦略
-        if price > ma50 and latest_short['Close'] > short_ma50:
-            strategy = f"🌟 *最強のトレンドフォロー買い*。日足S1 ({S1_long_str}) または4h S1 ({S1_short_str}) への*押し目買い*を積極的に検討。"
+    if dominance in ["明確なロング優勢 🚀", "ロング優勢 📈"]:
+        if latest_short['Close'] > short_ma50: # 短期も上向き
+            strategy = f"🌟 *最強のロング戦略*。日足S1 ({S1_long_str}) または4h S1 ({S1_short_str}) への*押し目買い*を積極的に検討。"
         else:
-            strategy = f"トレンドフォローの押し目買い戦略。日足P ({P_long_str}) への短期的な反落時が主な買い場。"
-    elif bias in ["強い下降", "下降"]:
-        # 長期的な弱気トレンドで、短期（4h）もMA50を下回っているなら、最も強い売り戦略
-        if price < ma50 and latest_short['Close'] < short_ma50:
-            strategy = f"💥 *最強のトレンドフォロー売り*。日足R1 ({R1_long_str}) または4h R1 ({R1_short_str}) への*戻り売り*を積極的に検討。"
+            strategy = f"ロング優勢の押し目買い戦略。日足P ({P_long_str}) への短期的な反落時が主な買い場。"
+    elif dominance in ["明確なショート優勢 💥", "ショート優勢 📉"]:
+        if latest_short['Close'] < short_ma50: # 短期も下向き
+            strategy = f"💥 *最強のショート戦略*。日足R1 ({R1_long_str}) または4h R1 ({R1_short_str}) への*戻り売り*を積極的に検討。"
         else:
-            strategy = f"トレンドフォローの戻り売り戦略。日足P ({P_long_str}) への短期的な上昇時が主な売り場。"
-    elif bias == "レンジ/中立":
-        # ボリンジャーバンドの幅 (BBB) が狭い場合（圧縮）はブレイクアウト待ち
-        # 修正: pandas_taが生成する正しいカラム名を使用
+            strategy = f"ショート優勢の戻り売り戦略。日足P ({P_long_str}) への短期的な上昇時が主な売り場。"
+    elif dominance == "中立/レンジ ↔️":
         BBB_COL = 'BBB_20_2.0_2.0' 
-
         bbb = latest[BBB_COL] if BBB_COL in latest else 100 
 
-        if bbb < 10: # BBB < 10%はボラティリティ低下を示す
+        if bbb < 10: # ボラティリティ圧縮
              strategy = f"ボラティリティ圧縮中。日足R1 ({R1_long_str}) / S1 ({S1_long_str}) の*ブレイクアウト待ち*。"
         else:
              strategy = f"レンジ取引。日足S1 ({S1_long_str}) 付近で買い、日足R1 ({R1_long_str}) 付近で売り。"
@@ -497,6 +475,7 @@ def generate_strategy(df_long: pd.DataFrame, df_short: pd.DataFrame) -> dict:
         'price': price,
         'P': P_long, 'R1': R1_long, 'S1': S1_long, 'MA50': ma50, 'RSI': rsi,
         'bias': bias,
+        'dominance': dominance, # 優勢度を追加
         'strategy': strategy,
         'details': details,
         'predictions': predictions
@@ -618,7 +597,6 @@ def update_report_data():
     # 3. バックテストの実行 (日足データを使用)
     try:
         logging.info(f"バックテスト実行中... 期間: {LONG_PERIOD}")
-        # df_long_analyzed全体をテスト対象とする
         backtest_results = backtest_strategy(df_long_analyzed) 
         global_data['backtest'] = backtest_results
         logging.info("✅ バックテスト完了。")
@@ -637,12 +615,13 @@ def update_report_data():
     global_data['current_price'] = analysis_result['price']
     global_data['strategy'] = analysis_result['strategy']
     global_data['bias'] = analysis_result['bias']
+    global_data['dominance'] = analysis_result['dominance'] # 優勢度を更新
     global_data['predictions'] = analysis_result['predictions']
 
-    # 6. レポートの整形 (視認性向上)
+    # 6. レポートの整形 (改行と優勢度の強調)
     price = analysis_result['price']
     P, R1, S1, ma50, rsi = analysis_result['P'], analysis_result['R1'], analysis_result['S1'], analysis_result['MA50'], analysis_result['RSI']
-    bias = analysis_result['bias']
+    dominance = analysis_result['dominance'] # 優勢度
     strategy = analysis_result['strategy']
     details = analysis_result['details']
     predictions = analysis_result['predictions']
@@ -664,28 +643,29 @@ def update_report_data():
         f"🔥 *RSI (14期間, 日足)*: {formatted_RSI}"
     ]
 
-    # 予測ラインを整理してリストに追加
     prediction_lines = [f"• {tf}後予測: *{predictions[tf]}*" for tf in ["1h", "4h", "12h", "24h"]]
 
     # 改行を多く入れ、セクションを明確に分離
     report_message = (
         f"👑 *BTC実践分析レポート (テクニカルBOT)* 👑\n\n"
         f"📅 *最終データ更新*: `{last_updated_str}`\n"
-        f"📊 *処理データ件数*: *{len(df_long)}* 件 ({LONG_INTERVAL}足) + *{len(df_short)}* 件 ({SHORT_INTERVAL}足)\n\n"
+        f"📊 *処理データ件数*: *{len(df_long)}* 件 ({LONG_INTERVAL}足) + *{len(df_short)}* 件 ({SHORT_INTERVAL}足})\n\n"
+        
+        # --- 市場優勢度の強調 ---
+        f"**🚀 市場の優勢 (Dominance) 🚀**\n"
+        f"🚨 *総合優勢度*: *{dominance}*\n\n"
         
         f"--- *主要価格帯と指標 (USD)* ---\n"
-        f"{'\\n'.join(price_analysis)}\n\n"
+        f"{'\\n'.join(price_analysis)}\n\n" # \nでアイテム間を改行
         
         f"--- *動向の詳細分析と根拠* ---\n"
-        f"{'\\n'.join(details)}\n\n"
+        f"{'\\n'.join(details)}\n\n" # \nで箇条書き間を改行
         
         f"--- *短期動向と予測* ---\n"
-        f"{'\\n'.join(prediction_lines)}\n\n"
+        f"{'\\n'.join(prediction_lines)}\n\n" # \nで予測間を改行
         
         f"--- *総合戦略サマリー* ---\n"
-        f"💡 *中期バイアス*: *{bias}* 傾向\n"
-        f"🛡️ *推奨戦略*: *{strategy}*\n"
-        f"_※ この分析は、実戦的なマルチタイムフレーム分析に基づきますが、投資助言ではありません。_\n\n"
+        f"🛡️ *推奨戦略*: *{strategy}*\n\n"
     )
     
     # --- バックテスト結果のレポートへの追加 ---
@@ -694,8 +674,8 @@ def update_report_data():
     else:
         backtest_lines = [
             f"--- *バックテスト結果 ({LONG_PERIOD} / {LONG_INTERVAL}足)* ---",
-            f"💰 *初期資本*: `\$ {BACKTEST_CAPITAL:,.2f}`",
-            f"📈 *最終利益率*: `{backtest_results['total_return']}%`",
+            f"💰 *最終資本*: `\$ {backtest_results['final_capital']:,.2f}` (初期: `\$ {BACKTEST_CAPITAL:,.2f}`)",
+            f"📈 *総リターン率*: *{backtest_results['total_return']}%*",
             f"🏆 *プロフィットファクター*: `{backtest_results['profit_factor']}` (1.0以上が望ましい)",
             f"📉 *最大ドローダウン (DD)*: `{backtest_results['max_drawdown']}%` (リスク指標)",
             f"📊 *取引回数*: `{backtest_results['trades']}` (勝率: `{backtest_results['win_rate']}%`)"
@@ -703,7 +683,8 @@ def update_report_data():
 
     report_message += (
         f"{chr(8212) * 20}\n" # 区切り線
-        f"{'\\n'.join(backtest_lines)}"
+        f"{'\\n'.join(backtest_lines)}\n\n"
+        f"_※ この分析は、実戦的なマルチタイムフレーム分析に基づきますが、投資助言ではありません。_"
     )
 
 
@@ -716,22 +697,23 @@ def update_report_data():
             f"📈 *BTC実践分析チャート ({LONG_INTERVAL}足)* 📉\n"
             f"📅 更新: `{last_updated_str}`\n"
             f"💰 現在価格: {formatted_current_price}\n"
-            f"💡 *中期バイアス*: *{bias}* / 🛡️ *推奨戦略*: {strategy}\n"
+            f"🚨 *優勢度*: *{dominance}*\n" # 優勢度を画像キャプションにも追加
+            f"🛡️ *推奨戦略*: {strategy}\n"
             f"_詳細は別途送信されるテキストレポートをご確認ください。_"
         )
 
-        # チャートバッファが空でないことを確認してから送信（Telegramエラー対策）
+        # チャートバッファが空でないことを確認してから送信
         if chart_buffer.getbuffer().nbytes > 0:
             Thread(target=send_telegram_photo, args=(chart_buffer, photo_caption)).start()
         else:
              logging.error("❌ チャート画像のバッファが空です。画像送信をスキップしました。")
-             error_caption = f"⚠️ *チャート生成失敗*\n\nデータは正常に処理されましたが、チャート画像生成中にエラーが発生しました。\n_詳細はログをご確認ください。_\n\n最終更新: {last_updated_str}"
+             error_caption = f"⚠️ *チャート生成失敗*\n\nデータは正常に処理されましたが、チャート画像生成中にエラーが発生しました。\n最終更新: {last_updated_str}"
              Thread(target=send_telegram_message, args=(error_caption,)).start()
 
 
     except Exception as e:
         logging.error(f"❌ チャート画像の生成または送信に失敗しました: {e}", exc_info=True)
-        error_caption = f"⚠️ *チャート生成失敗*\n\nデータは正常に処理されましたが、チャート画像生成中に予期せぬエラーが発生しました。\nエラー詳細: {str(e)[:100]}...\n\n最終更新: {last_updated_str}"
+        error_caption = f"⚠️ *チャート生成失敗*\n\nデータは正常に処理されましたが、チャート画像生成中に予期せぬエラーが発生しました。\nエラー詳細: {str(e)[:100]}...\n最終更新: {last_updated_str}"
         Thread(target=send_telegram_message, args=(error_caption,)).start()
 
 
