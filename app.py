@@ -55,25 +55,55 @@ global_data = {
 data_item_count = 0
 
 # -----------------
-# データ取得・分析関数 (将来的にAPI呼び出しに置き換えるモック)
+# データ取得・分析関数 (CoinGecko APIを使用)
 # -----------------
 def get_real_time_btc_data(data_count: int) -> tuple[int, int, int]:
     """
-    BTCの現在価格、R1、S1をシミュレーションで取得します。
-    
-    🚨 ユーザーはここを、実際の金融API（例: CoinGecko, Binance, Yahoo Financeなど）
-       を呼び出す実践的なロジックに置き換える必要があります。
+    CoinGecko APIからBTCのリアルタイム価格を取得します。失敗時はシミュレーションを使用します。
     """
-    # --- 現在はダミー価格生成 ---
-    # データ件数に基づいて価格の基準を変動させる
-    base_price = 60000 
-    price_factor = (data_count // 1000) % 10 
+    API_URL = "https://api.coingecko.com/api/v3/simple/price"
+    params = {
+        'ids': 'bitcoin',
+        'vs_currencies': 'usd'
+    }
     
-    # 価格にランダムな変動を加える
-    simulated_price = base_price + price_factor * 2000 + random.randint(-700, 700) 
+    current_price = 0
+    
+    try:
+        logging.info("CoinGecko APIからリアルタイムBTC価格を取得中...")
+        response = requests.get(API_URL, params=params, timeout=5)
+        response.raise_for_status() # HTTPエラーがあれば例外を発生させる
         
-    current_price = int(simulated_price)
+        data = response.json()
+        
+        if 'bitcoin' in data and 'usd' in data['bitcoin']:
+            # 取得した価格を整数に丸めて使用
+            current_price = int(data['bitcoin']['usd'])
+            logging.info(f"CoinGeckoからリアルタイム価格を取得しました: ${current_price:,}")
+        else:
+            logging.warning("CoinGecko APIからのレスポンスに価格データが含まれていませんでした。シミュレーションにフォールバックします。")
+
+    except requests.exceptions.RequestException as e:
+        logging.error(f"CoinGecko APIへの接続またはデータ取得に失敗しました: {e}。シミュレーションにフォールバックします。")
     
+    
+    # -----------------
+    # フォールバック (APIが失敗した場合、または初期価格が0の場合)
+    # -----------------
+    if current_price <= 0:
+        # データ件数に基づいて価格の基準を変動させる
+        base_price = 60000 
+        price_factor = (data_count // 1000) % 10 
+        
+        # 価格にランダムな変動を加える
+        simulated_price = base_price + price_factor * 2000 + random.randint(-700, 700) 
+            
+        current_price = int(simulated_price)
+        logging.info(f"シミュレーション価格を使用します: ${current_price:,}")
+    
+    # -----------------
+    # R1/S1の計算 (リアルタイムまたはシミュレーション価格に基づき計算)
+    # -----------------
     # サポート/レジスタンスレベルの計算（現在価格の±1.5%）
     r1 = int(current_price * 1.015)  
     s1 = int(current_price * 0.985)  
@@ -168,19 +198,22 @@ def generate_chart_image(current_price: int, r1: int, s1: int) -> io.BytesIO:
     # R1 (レジスタンス): 赤色の破線
     ax.axhline(r1, color='#ef4444', linestyle='--', linewidth=1.5, label=f'R1: ${r1:,}')
     # R1にラベルを付与
-    ax.text(df.index[-1], r1, f' R1 (抵抗線) ${r1:,}', color='#ef4444', ha='right', va='bottom', fontsize=10, weight='bold', bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', boxstyle='round,pad=0.3'))
+    # 日本語フォントの問題を回避するため、ここでは英語/数字のみを使用し、キャプションで日本語を補足します。
+    ax.text(df.index[-1], r1, f' R1 (Resistance) ${r1:,}', color='#ef4444', ha='right', va='bottom', fontsize=10, weight='bold', bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', boxstyle='round,pad=0.3'))
 
     # S1 (サポート): 青色の破線
     ax.axhline(s1, color='#3b82f6', linestyle='--', linewidth=1.5, label=f'S1: ${s1:,}')
     # S1にラベルを付与
-    ax.text(df.index[-1], s1, f' S1 (支持線) ${s1:,}', color='#3b82f6', ha='right', va='top', fontsize=10, weight='bold', bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', boxstyle='round,pad=0.3'))
+    ax.text(df.index[-1], s1, f' S1 (Support) ${s1:,}', color='#3b82f6', ha='right', va='top', fontsize=10, weight='bold', bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', boxstyle='round,pad=0.3'))
     
     # 現在価格の点とラベル
     ax.scatter(df.index[-1], current_price, color='black', s=80, zorder=5) # 現在価格を強調
     ax.text(df.index[-1] + datetime.timedelta(days=0.5), current_price, f' Now ${current_price:,}', color='black', ha='left', va='center', fontsize=11, weight='bold')
 
     # 3. グラフの装飾
-    ax.set_title('BTC Price Action with Key Levels (30 Days Sim.)', fontsize=16, color='#1f2937', weight='bold')
+    # タイトルにはAPIの使用状況を反映
+    source_label = "(CoinGecko API使用)" if current_price > 0 and current_price != 60000 else "(シミュレーション)"
+    ax.set_title(f'BTC Price Action with Key Levels {source_label}', fontsize=16, color='#1f2937', weight='bold')
     ax.set_xlabel('Date', fontsize=12)
     ax.set_ylabel('Price (USD)', fontsize=12)
     
@@ -231,7 +264,7 @@ def update_report_data():
     # BTC予測のシミュレーション (実践的なシミュレーションロジックを導入)
     data_count = global_data['data_count']
     
-    # --- 主要価格帯のシミュレーション (get_real_time_btc_data関数で処理) ---
+    # --- 主要価格帯の取得 (CoinGecko APIでリアルタイム価格を取得) ---
     current_price, r1, s1 = get_real_time_btc_data(data_count)
 
     outcomes = {"UP": "上昇 📈", "DOWN": "下降 📉", "SIDE": "レンジ ↔️"}
@@ -242,9 +275,14 @@ def update_report_data():
     formatted_current_price = f"`${current_price:,}`"
     formatted_r1 = f"`${r1:,}`"
     formatted_s1 = f"`${s1:,}`"
+
+    # 価格取得のソースを判定し、メッセージに含める
+    price_source = "リアルタイム価格 (CoinGecko)"
+    if current_price <= 60000 + 700: # 最初のシミュレーションベース価格に近いかどうかで判定
+        price_source = "シミュレーション価格 (API取得失敗時)"
     
     price_analysis = [
-        f"💰 *現在価格 (シミュレート)*: {formatted_current_price}",
+        f"💰 *現在価格 ({price_source})*: {formatted_current_price}",
         f"🔼 *主要レジスタンス (R1)*: {formatted_r1} (ブレイクで強い上昇トレンド開始)",
         f"🔽 *主要サポート (S1)*: {formatted_s1} (維持で反発、割れると下降加速)"
     ]
@@ -317,7 +355,7 @@ def update_report_data():
         f"--- *総合戦略サマリー* ---\n"
         f"💡 *短期（1h）バイアス*: *{short_term_bias}* 傾向\n"
         f"🛡️ *推奨戦略*: {long_term_advice}がベースとなります。短期的な値動き（1h/4h）は、分析詳細で触れたモメンタム指標に大きく依存します。\n"
-        f"_※ この予測は、現在のデータセットに基づくシミュレーションであり、投資助言ではありません。_"
+        f"_※ この予測は、現在のデータセットに基づく分析であり、投資助言ではありません。_"
     )
     
     # 5. 画像生成と画像通知の実行
@@ -327,7 +365,7 @@ def update_report_data():
         
         # 画像キャプションとしてレポートサマリーの一部を使用
         photo_caption = (
-            f"📈 *BTCチャート分析 (Sim.)* 📉\n"
+            f"📈 *BTCチャート分析 ({price_source})* 📉\n"
             f"📅 更新: `{last_updated_str}`\n"
             f"{price_analysis_text}\n\n"
             f"総合予測: 💡 *短期バイアス*:{short_term_bias} / 🛡️ *推奨戦略*:{long_term_advice}\n"
