@@ -570,6 +570,10 @@ def update_report_data():
     now = datetime.datetime.now()
     last_updated_str = now.strftime('%Y-%m-%d %H:%M:%S')
 
+    # === 修正点: 処理開始時にステータスを即時更新し、ダッシュボードの「N/A」状態を解消 ===
+    global_data['scheduler_status'] = 'データ取得・分析中...'
+    global_data['last_updated'] = last_updated_str
+    
     # 1. データ取得 (日足と4時間足)
     df_long = fetch_btc_ohlcv_data(LONG_PERIOD, LONG_INTERVAL)
     df_short = fetch_btc_ohlcv_data(SHORT_PERIOD, SHORT_INTERVAL)
@@ -577,7 +581,8 @@ def update_report_data():
     # データが空の場合の処理
     if df_long.empty or df_short.empty:
         logging.error("致命的エラー: データ取得に失敗したため、レポートを生成できません。")
-        global_data['scheduler_status'] = 'エラー'
+        # エラー発生時はステータスを更新
+        global_data['scheduler_status'] = 'エラー（データ取得失敗）'
         global_data['strategy'] = 'データ取得エラー'
         error_msg = f"❌ *BTC分析レポート生成エラー*\n\nデータ取得に失敗しました。ネットワーク接続を確認するか、数分後に再試行してください。\n最終更新: {last_updated_str}"
         Thread(target=send_telegram_message, args=(error_msg,)).start()
@@ -589,7 +594,7 @@ def update_report_data():
         df_short_analyzed = analyze_data(df_short) # 短期分析も実行
     except Exception as e:
         logging.error(f"致命的エラー: テクニカル分析中にエラーが発生しました: {e}", exc_info=True)
-        global_data['scheduler_status'] = 'エラー'
+        global_data['scheduler_status'] = 'エラー（分析失敗）'
         error_msg = f"❌ *BTC分析レポート生成エラー*\n\nテクニカル分析中にエラーが発生しました。\n詳細: {str(e)}\n最終更新: {last_updated_str}"
         Thread(target=send_telegram_message, args=(error_msg,)).start()
         return
@@ -608,7 +613,7 @@ def update_report_data():
     # 4. 戦略と予測の生成 (日足と4時間足の両方を使用)
     analysis_result = generate_strategy(df_long_analyzed, df_short_analyzed)
 
-    # 5. グローバル状態の更新
+    # 5. グローバル状態の更新 (正常完了時)
     global_data['last_updated'] = last_updated_str
     global_data['data_count'] = len(df_long) + len(df_short) 
     global_data['scheduler_status'] = '稼働中'
