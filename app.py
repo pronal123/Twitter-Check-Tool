@@ -1,135 +1,117 @@
 import datetime
 import logging
 import time
+import os
 from threading import Thread
-import os # <--- ここを追加: 環境変数を読み込むために必要
 
 # Flask関連のインポート
 from flask import Flask, render_template, jsonify
+from flask_apscheduler import APScheduler # <--- スケジューラーをインポート
 
-# スケジューラーのインポート
-from flask_apscheduler import APScheduler
-
+# -----------------
 # ロギング設定
+# -----------------
 logging.basicConfig(level=logging.INFO,
                     format='[%(asctime)s] %(levelname)s: %(message)s',
                     datefmt='%Y-%m-%d %H:%M:%S')
 
-# グローバル変数 (データとスケジューラーの状態を保持)
-global_data = {
-    "last_updated": "未実行",
-    "data_range": "N/A",
-    "data_count": 0,
-    "scheduler_status": "初期化中"
-}
-
 # -----------------
-# データ取得/処理関数 (トレードデータ取得のダミー関数)
+# アプリケーション初期化
 # -----------------
-def fetch_data(days_ago=900):
-    """
-    APIから過去のトレードデータを取得するダミー関数。
-    """
-    try:
-        logging.info(f"APIから過去 {days_ago} 日間のデータ取得を試行中...")
-        
-        # 取得期間の計算
-        end_date = datetime.datetime.now()
-        start_date = end_date - datetime.timedelta(days=days_ago)
-        
-        # 実際のAPI呼び出しの遅延をシミュレート
-        time.sleep(2) 
-        
-        # 成功時のダミーデータ
-        data_count = 1000 # ダミーのデータ件数
-        
-        # グローバルデータの更新
-        global global_data
-        global_data.update({
-            "last_updated": end_date.strftime('%Y-%m-%d %H:%M:%S'),
-            "data_range": f"{start_date.strftime('%Y-%m-%d')} - {end_date.strftime('%Y-%m-%d')}",
-            "data_count": data_count,
-        })
-        
-        logging.info(f"データ取得が成功しました。期間: {global_data['data_range']}, 件数: {data_count}")
-        return {"status": "success"}
-
-    except Exception as e:
-        logging.error(f"予期せぬデータ取得エラー: {e}")
-        return {"status": "error", "message": str(e)}
-
-def update_report_task():
-    """定期的に実行されるレポート更新タスク。"""
-    logging.info("スケジュールされたレポート更新タスク開始...")
-    fetch_data()
-    logging.info("レポート更新タスク完了。")
-
-# -----------------
-# Flaskアプリケーション本体
-# -----------------
-# テンプレートファイルをapp.pyと同じ階層からロードします。
-app = Flask(__name__, template_folder='./')
-app.config.update({
-    'SCHEDULER_API_ENABLED': True
-})
-logging.info("🤖 FuturesMLBot初期化完了。")
-
-# スケジューラーの初期化
+# Flaskアプリのインスタンスを作成
+app = Flask(__name__, template_folder='templates')
+# スケジューラーのインスタンスを作成
 scheduler = APScheduler()
 
+# ダミーデータとグローバル状態
+global_data = {
+    'last_updated': 'N/A',
+    'data_range': '2023-01-01 - 2025-11-18', # 初期ダミー期間
+    'data_count': 0,
+    'scheduler_status': '初期化中'
+}
+data_item_count = 0
 
-# ----------------------------------------------------
-# 💥 修正: before_first_requestを廃止し、アプリロード時に直接実行
-# ----------------------------------------------------
-def setup_scheduler():
-    """スケジューラーを設定し、初回起動を実行する関数。"""
+# -----------------
+# スケジューリングタスク
+# -----------------
+def update_report_data():
+    """定期的に実行されるタスク：データ取得とレポート更新のシミュレーション"""
+    global global_data
+    global data_item_count
+
+    logging.info("スケジュールされたレポート更新タスク開始...")
     
-    # 既存のジョブを削除
-    for job in scheduler.get_jobs():
-        job.remove()
-        
-    # 定期実行ジョブの追加 (例: 1分ごとに実行)
-    scheduler.add_job(
-        id='scheduled_report_update',
-        func=update_report_task,
-        trigger='interval',
-        minutes=1,
-        max_instances=1,
-        name='レポート定期更新'
-    )
+    # 1. データ取得のシミュレーション (ここではダミーで900日間としています)
+    days_to_fetch = 900
+    logging.info(f"APIから過去 {days_to_fetch} 日間のデータ取得を試行中...")
     
-    # スケジューラーの起動
-    if not scheduler.running:
-        scheduler.init_app(app)
-        scheduler.start()
-        global_data["scheduler_status"] = "稼働中 (1分ごと)"
-        logging.info("⏳ スケジューラーを起動し、初回レポート生成を実行します...")
-        # 初回起動時のデータ取得を非同期で実行
-        update_report_task()
-    else:
-        global_data["scheduler_status"] = "既に稼働中"
-        logging.info("⏳ スケジューラーは既に稼働中です。")
+    # ダミー処理時間（2秒）
+    time.sleep(2) 
+    
+    # 2. ダミーデータの更新
+    data_item_count += 1000 # 毎回1000件ずつデータが増加したと仮定
+    now = datetime.datetime.now()
+    
+    # 3. グローバル状態の更新
+    global_data['last_updated'] = now.strftime('%Y-%m-%d %H:%M:%S')
+    global_data['data_count'] = data_item_count
+    global_data['scheduler_status'] = '稼働中'
+    
+    logging.info(f"データ取得が成功しました。期間: {global_data['data_range']}, 件数: {global_data['data_count']}")
+    logging.info("レポート更新タスク完了。")
 
-# Gunicornなどによってアプリがロードされるときに、スケジューラーを設定
-setup_scheduler()
-# ----------------------------------------------------
 
-
+# -----------------
+# ルート（エンドポイント）
+# -----------------
 @app.route('/')
 def index():
-    # index.htmlをapp.pyと同じ階層からロードします。
-    # グローバルデータをテンプレートに渡します
-    return render_template('index.html', title='ML活用先物BOT分析レポート', data=global_data)
-
-@app.route('/status')
-def status():
-    # AJAXでデータを取得するためのエンドポイント
-    return jsonify(global_data)
+    """ダッシュボードの表示"""
+    # HTMLのプレビューでは、このルートで `templates/index.html` ではなく、
+    # 直下の `index.html` がレンダリングされることに注意してください。
+    return render_template('index.html', title='ML BOT分析レポート ダッシュボード', data=global_data)
 
 # -----------------
-# サーバー起動 (開発用)
+# スケジューラーの初期設定と開始
+# -----------------
+if not scheduler.running:
+    # スケジューラー設定
+    app.config.update({
+        'SCHEDULER_JOBSTORES': {
+            'default': {'type': 'memory'}
+        },
+        'SCHEDULER_EXECUTORS': {
+            'default': {'type': 'threadpool', 'max_workers': 20}
+        },
+        'SCHEDULER_API_ENABLED': False # API経由での制御を無効化
+    })
+    
+    # アプリケーションにスケジューラーを登録
+    scheduler.init_app(app)
+    
+    # 1分間隔でジョブを追加
+    scheduler.add_job(id='report_update_job', func=update_report_data, 
+                      trigger='interval', minutes=1, replace_existing=True)
+    
+    # スケジューラーを開始
+    scheduler.start()
+    logging.info("✅ スケジューラーを開始しました。")
+
+# 最初のデータロードを強制的に実行し、初期表示に備える
+update_report_data()
+
+
+# -----------------
+# サーバー起動 (ローカル開発用)
 # -----------------
 if __name__ == '__main__':
-    # 開発環境で直接実行される場合
-    logging.info("🚀 Flaskアプリケーションを起動中...")
-    app.run(host='0.0.0.0', port=8080)
+    # 環境変数 'PORT' が設定されていればそれを使用し、なければデフォルトの8080を使用
+    port = int(os.environ.get('PORT', 8080))
+    
+    logging.info(f"🚀 Flaskアプリケーションを起動中... (ポート: {port})")
+    
+    # ホストを '0.0.0.0' にバインドし、指定されたポートでサーバーを起動
+    # **注意**: 本番環境では Gunicorn (requirements.txtに含まれている) などのWSGIサーバーを使用してください。
+    # 例: gunicorn app:app
+    app.run(host='0.0.0.0', port=port, debug=False)
