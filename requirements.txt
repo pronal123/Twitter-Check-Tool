@@ -10,3 +10,4 @@ python-dotenv
 gunicorn  # <-- 💥 これを追加
 python-telegram-bot
 matplotlib
+yfinance
