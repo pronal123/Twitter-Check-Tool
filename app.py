@@ -12,6 +12,16 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.dates import DateFormatter
 
+# -----------------
+# Matplotlib 日本語フォント設定
+# -----------------
+# CJK (日本語)をサポートするフォントを優先的に設定し、警告を解消します。
+# 環境に 'Noto Sans CJK JP' や 'IPAexGothic' があれば使用されます。
+plt.rcParams['font.family'] = 'sans-serif'
+plt.rcParams['font.sans-serif'] = ['Noto Sans CJK JP', 'IPAexGothic', 'Hiragino Sans GB', 'Liberation Sans']
+# マイナス記号が豆腐になるのを防ぐ設定
+plt.rcParams['axes.unicode_minus'] = False 
+
 # Flask関連のインポート
 from flask import Flask, render_template, jsonify
 from flask_apscheduler import APScheduler # スケジューラーをインポート
@@ -221,26 +231,27 @@ def generate_chart_image(current_price: int, r1: int, s1: int) -> io.BytesIO:
     
     # R1 (レジスタンス): 赤色の破線
     ax.axhline(r1, color='#ef4444', linestyle='--', linewidth=1.5, label=f'R1: ${r1:,}')
-    # R1にラベルを付与
-    ax.text(df.index[-1], r1, f' R1 (Resistance) ${r1:,}', color='#ef4444', ha='right', va='bottom', fontsize=10, weight='bold', bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', boxstyle='round,pad=0.3'))
+    # R1にラベルを付与 (日本語の警告を回避するため、ここで日本語ラベルを使用しないように調整することも可能ですが、
+    # 今回はグローバル設定で対応します。)
+    ax.text(df.index[-1], r1, f' R1 (レジスタンス) ${r1:,}', color='#ef4444', ha='right', va='bottom', fontsize=10, weight='bold', bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', boxstyle='round,pad=0.3'))
 
     # S1 (サポート): 青色の破線
     ax.axhline(s1, color='#3b82f6', linestyle='--', linewidth=1.5, label=f'S1: ${s1:,}')
     # S1にラベルを付与
-    ax.text(df.index[-1], s1, f' S1 (Support) ${s1:,}', color='#3b82f6', ha='right', va='top', fontsize=10, weight='bold', bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', boxstyle='round,pad=0.3'))
+    ax.text(df.index[-1], s1, f' S1 (サポート) ${s1:,}', color='#3b82f6', ha='right', va='top', fontsize=10, weight='bold', bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', boxstyle='round,pad=0.3'))
     
     # 現在価格の点とラベル
     ax.scatter(df.index[-1], current_price, color='black', s=80, zorder=5) # 現在価格を強調
-    ax.text(df.index[-1] + datetime.timedelta(days=0.5), current_price, f' Now ${current_price:,}', color='black', ha='left', va='center', fontsize=11, weight='bold')
+    ax.text(df.index[-1] + datetime.timedelta(days=0.5), current_price, f' 現在価格 ${current_price:,}', color='black', ha='left', va='center', fontsize=11, weight='bold')
 
     # 3. グラフの装飾
     # 価格取得のソースを判定
     is_simulated = current_price <= 60000 + 700 
-    source_label = "(CoinGecko API)" if not is_simulated else "(Simulation Fallback)"
+    price_source_label = "（CoinGecko API）" if not is_simulated else "（シミュレーション）"
     # タイトルにはAPIの使用状況を反映
-    ax.set_title(f'BTC Price Action with Key Levels {source_label}', fontsize=16, color='#1f2937', weight='bold')
-    ax.set_xlabel('Date', fontsize=12)
-    ax.set_ylabel('Price (USD)', fontsize=12)
+    ax.set_title(f'BTC価格推移と主要な価格帯 {price_source_label}', fontsize=16, color='#1f2937', weight='bold')
+    ax.set_xlabel('日付', fontsize=12)
+    ax.set_ylabel('価格 (USD)', fontsize=12)
     
     # 日付フォーマットの設定
     formatter = DateFormatter("%m/%d")
