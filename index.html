@@ -3,8 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BTC実践テクニカル分析 BOT ダッシュボード</title>
-    <!-- Tailwind CSS CDN -->
+    <title>{{ title }}</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         /* Google Fonts - Inter */
@@ -35,144 +34,140 @@
         }
     </style>
 </head>
-<body class="p-4 md:p-8">
-    <div class="max-w-5xl mx-auto">
-        <header class="text-center py-8 bg-white rounded-2xl mb-8 shadow-xl">
-            <h1 class="text-4xl font-extrabold text-gray-900">
-                <span class="text-yellow-500">₿</span> BTC 実践テクニカル分析 BOT
+<body class="p-8">
+
+    <div class="max-w-6xl mx-auto">
+        <header class="mb-8">
+            <h1 class="text-4xl font-extrabold text-gray-900 flex items-center">
+                <span class="text-yellow-500 mr-3">₿</span> {{ title }}
             </h1>
-            <p class="text-lg text-gray-500 mt-2">自動分析レポートとTelegram通知のリアルタイムステータス</p>
+            <p class="text-gray-500 mt-1">リアルタイム分析とバックテストによる戦略検証</p>
         </header>
 
-        <main id="dashboard-content" class="space-y-8">
-            <!-- データ処理中/エラーメッセージ -->
-            <div id="loading-state" class="text-center p-10 bg-white rounded-xl card hidden">
-                <div class="loading mx-auto mb-4"></div>
-                <p class="text-xl font-semibold text-gray-700">データを初回取得・分析中です...</p>
-                <p class="text-sm text-gray-500 mt-2">初回処理には最大1分程度かかることがあります。</p>
+        <div id="loading-state" class="text-center py-20 hidden">
+            <div class="loading mx-auto mb-4"></div>
+            <p class="text-gray-600 font-medium">データ取得・分析実行中... しばらくお待ちください。</p>
+        </div>
+
+        <div id="metric-cards" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+
+            <div class="card bg-gray-800 text-white p-5 rounded-xl">
+                <h3 class="text-lg font-semibold opacity-90">現在価格 (USD)</h3>
+                <p id="current-price" class="text-4xl font-bold mt-2">$ N/A</p>
+                <p id="last-updated" class="text-sm opacity-70 mt-1">最終更新: N/A</p>
             </div>
 
-            <!-- 主要指標カードコンテナ -->
-            <div id="metric-cards" class="grid grid-cols-1 md:grid-cols-4 gap-6">
-                <!-- 1. BOT ステータス -->
-                <div id="status-card" class="card p-6 bg-white rounded-xl border-t-4">
-                    <p class="text-sm font-semibold text-gray-500">BOT ステータス</p>
-                    <p class="text-3xl font-bold mt-1 text-gray-800" id="scheduler-status">...</p>
-                    <p class="text-xs text-gray-400 mt-3">更新周期: 6時間ごと</p>
-                </div>
-                
-                <!-- 2. 現在価格 -->
-                <div class="card p-6 bg-white rounded-xl border-t-4 border-blue-600">
-                    <p class="text-sm font-semibold text-gray-500">現在価格 (BTC-USD)</p>
-                    <p class="text-3xl font-extrabold mt-1 text-blue-700" id="current-price">...</p>
-                    <p class="text-xs text-gray-400 mt-3">最終更新: <span id="last-updated">...</span></p>
-                </div>
-
-                <!-- 3. 中期バイアス -->
-                <div class="card p-6 bg-white rounded-xl border-t-4 border-purple-600">
-                    <p class="text-sm font-semibold text-gray-500">中期バイアス</p>
-                    <p class="text-3xl font-bold mt-1 text-purple-700" id="bias">...</p>
-                    <p class="text-xs text-gray-400 mt-3">MA50基準の傾向</p>
-                </div>
-                
-                <!-- 4. データ件数 -->
-                <div class="card p-6 bg-white rounded-xl border-t-4 border-gray-400">
-                    <p class="text-sm font-semibold text-gray-500">分析データ件数</p>
-                    <p class="text-3xl font-bold mt-1 text-gray-700" id="data-count">...</p>
-                    <p class="text-xs text-gray-400 mt-3"><span id="data-range">...</span></p>
-                </div>
+            <div id="bias-card" class="card bg-blue-600 text-white p-5 rounded-xl">
+                <h3 class="text-lg font-semibold opacity-90">中期バイアス (日足)</h3>
+                <p id="bias" class="text-4xl font-bold mt-2">N/A</p>
+                <p class="text-sm opacity-70 mt-1">トレンド傾向</p>
             </div>
 
-            <!-- 戦略サマリー -->
-            <div class="card p-6 bg-white rounded-xl border-l-8 border-yellow-500">
-                <h2 class="text-2xl font-bold text-gray-800 mb-3 flex items-center">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-yellow-500 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 6v.008a.999.999 0 00-.775-.245L4.47 5.087A1 1 0 004 6v10.125m10-10.125L12 5.875M12 5.875v6" />
-                    </svg>
-                    推奨戦略サマリー
-                </h2>
-                <p class="text-lg text-gray-600 font-medium" id="strategy">...</p>
+            <div id="status-card" class="card bg-green-500 text-white p-5 rounded-xl">
+                <h3 class="text-lg font-semibold opacity-90">BOTステータス</h3>
+                <p id="scheduler-status" class="text-4xl font-bold mt-2">N/A</p>
+                <p id="data-range" class="text-sm opacity-70 mt-1">N/A</p>
             </div>
-            
-            <!-- 予測情報（もしあれば） -->
-            <div id="predictions-area" class="card p-6 bg-white rounded-xl hidden">
-                <h3 class="text-xl font-bold text-gray-800 mb-3">短期予測</h3>
-                <div id="prediction-list" class="grid grid-cols-2 gap-4 text-lg">
-                    <!-- Predictions will be inserted here -->
+
+            <div class="card bg-yellow-600 text-white p-5 rounded-xl transition duration-200 hover:shadow-lg">
+                <div class="flex justify-between items-start">
+                    <h3 class="text-lg font-semibold opacity-90">バックテスト結果 (1年)</h3>
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0a2 2 0 002 2h2a2 2 0 002-2v-6a2 2 0 00-2-2h-2a2 2 0 00-2 2v6a2 2 0 002 2z"></path></svg>
+                </div>
+                <div id="backtest-results" class="mt-3 space-y-2">
+                    <p class="text-sm font-medium">最終利益率: <span id="bt-return" class="font-bold">N/A</span></p>
+                    <p class="text-sm font-medium">PF (利益率): <span id="bt-pf" class="font-bold">N/A</span></p>
+                    <p class="text-sm font-medium">最大DD (リスク): <span id="bt-dd" class="font-bold">N/A</span></p>
+                    <p class="text-sm font-medium">取引回数: <span id="bt-trades" class="font-bold">N/A</span></p>
                 </div>
             </div>
 
-        </main>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div class="lg:col-span-2 card bg-white p-6 rounded-xl">
+                <h2 class="text-2xl font-bold text-gray-800 mb-4">🛡️ 推奨される総合戦略</h2>
+                <p id="strategy" class="text-xl font-medium text-gray-700 leading-relaxed">
+                    N/A
+                </p>
+            </div>
+
+            <div id="predictions-area" class="card bg-white p-6 rounded-xl">
+                 <h2 class="text-2xl font-bold text-gray-800 mb-4">🚀 短期予測 (マルチタイムフレーム)</h2>
+                 <ul id="prediction-list" class="space-y-3">
+                     </ul>
+            </div>
+        </div>
+        
     </div>
 
-    <!-- JavaScript for dynamic updates -->
     <script>
-        // 価格をフォーマットする関数
-        function formatPrice(price) {
-            if (typeof price === 'number' && !isNaN(price) && price !== 0) {
-                return '$' + price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-            }
-            return 'N/A';
-        }
+        // バイアスに基づく色分け
+        const BIAS_COLORS = {
+            '強い上昇': 'bg-green-600',
+            '上昇': 'bg-green-500',
+            'レンジ/中立': 'bg-blue-600',
+            '下降': 'bg-red-500',
+            '強い下降': 'bg-red-600',
+            'データ不足': 'bg-gray-500',
+            'N/A': 'bg-gray-500'
+        };
 
         // ダッシュボードを更新するメイン関数
         function updateDashboard(data) {
-            const statusCard = document.getElementById('status-card');
-            
-            // データのロード状態を管理
-            const isLoading = data.scheduler_status === '初期化中' || data.strategy === 'データ処理中';
-            document.getElementById('loading-state').classList.toggle('hidden', !isLoading);
-            document.getElementById('metric-cards').classList.toggle('hidden', isLoading);
-            document.getElementById('strategy').parentElement.classList.toggle('hidden', isLoading);
-            
-            if (isLoading) {
-                // ロード中は詳細な更新をスキップ
-                return;
-            }
+            // ローディング状態の解除
+            document.getElementById('loading-state').classList.add('hidden');
+            document.getElementById('metric-cards').classList.remove('hidden');
 
-            // --- ステータスカードの更新 ---
+            // 1. 基本情報の更新
+            const currentPrice = data.current_price > 0 ? `$ ${data.current_price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : 'N/A';
+            document.getElementById('current-price').textContent = currentPrice;
+            document.getElementById('last-updated').textContent = `最終更新: ${data.last_updated}`;
             document.getElementById('scheduler-status').textContent = data.scheduler_status;
-            statusCard.classList.remove('border-green-500', 'border-red-500', 'border-yellow-500');
-            
-            if (data.scheduler_status === '稼働中') {
-                statusCard.classList.add('border-green-500');
-            } else if (data.scheduler_status === 'エラー') {
-                statusCard.classList.add('border-red-500');
-            } else {
-                statusCard.classList.add('border-yellow-500');
-            }
-            
-            // --- その他の指標の更新 ---
-            document.getElementById('current-price').textContent = formatPrice(data.current_price);
-            document.getElementById('last-updated').textContent = data.last_updated;
-            document.getElementById('bias').textContent = data.bias;
-            document.getElementById('strategy').textContent = data.strategy;
-            document.getElementById('data-count').textContent = data.data_count;
             document.getElementById('data-range').textContent = data.data_range;
+            document.getElementById('strategy').textContent = data.strategy;
 
-            // --- 予測リストの更新 (もしあれば) ---
-            const predictions = data.predictions; // app.pyに'predictions'フィールドが存在すると仮定
+            // 2. バイアスカードの更新
+            const bias = data.bias || 'N/A';
+            const biasCard = document.getElementById('bias-card');
+            biasCard.classList.remove(...Object.values(BIAS_COLORS)); // 既存の色を全て削除
+            biasCard.classList.add(BIAS_COLORS[bias] || BIAS_COLORS['N/A']); // 新しい色を設定
+            document.getElementById('bias').textContent = bias;
+
+            // 3. 予測リストの更新
+            const predictions = data.predictions || {};
             const predictionList = document.getElementById('prediction-list');
-            const predictionsArea = document.getElementById('predictions-area');
-            
-            if (predictions && Object.keys(predictions).length > 0) {
-                predictionList.innerHTML = '';
-                predictionsArea.classList.remove('hidden');
-                
-                for (const timeFrame in predictions) {
-                    const predictionText = predictions[timeFrame];
-                    const item = document.createElement('div');
-                    item.className = 'flex justify-between items-center p-3 bg-gray-50 rounded-lg';
+            predictionList.innerHTML = ''; // リストをクリア
+
+            if (Object.keys(predictions).length > 0) {
+                document.getElementById('predictions-area').classList.remove('hidden');
+                for (const tf in predictions) {
+                    const item = document.createElement('li');
+                    item.className = 'flex justify-between items-center text-gray-700';
                     item.innerHTML = `
-                        <span class="font-semibold text-gray-600">${timeFrame}後</span>
-                        <span class="font-bold ${predictionText.includes('上昇') ? 'text-green-600' : predictionText.includes('下降') ? 'text-red-600' : 'text-gray-500'}">
-                            ${predictionText}
-                        </span>
+                        <span class="font-semibold">${tf}後 (${tf})</span>
+                        <span class="font-bold text-lg">${predictions[tf]}</span>
                     `;
                     predictionList.appendChild(item);
                 }
             } else {
-                 predictionsArea.classList.add('hidden');
+                 document.getElementById('predictions-area').classList.add('hidden');
+            }
+            
+            // 4. バックテスト結果の更新
+            const backtestResults = data.backtest || {};
+            const backtestArea = document.getElementById('backtest-results');
+
+            if (backtestResults && backtestResults.trades !== undefined) {
+                // 数値をカンマ区切りで表示
+                document.getElementById('bt-return').textContent = `${backtestResults.total_return}%`;
+                document.getElementById('bt-pf').textContent = backtestResults.profit_factor;
+                document.getElementById('bt-dd').textContent = `${backtestResults.max_drawdown}%`;
+                document.getElementById('bt-trades').textContent = `${backtestResults.trades} (${backtestResults.win_rate}%)`;
+            } else if (backtestResults && backtestResults.error) {
+                backtestArea.innerHTML = `<p class="text-sm font-bold text-white">エラー: ${backtestResults.error}</p>`;
+            } else {
+                 backtestArea.innerHTML = `<p class="text-sm font-bold text-white">データ不足 / 実行待ち</p>`;
             }
         }
 
@@ -187,7 +182,7 @@
                 // エラー発生時はローディング状態に戻す
                 updateDashboard({
                     scheduler_status: 'エラー',
-                    strategy: 'データ取得エラー',
+                    strategy: '接続エラーによりデータが取得できません。',
                     current_price: 0,
                     bias: 'N/A',
                     last_updated: '接続失敗',
@@ -198,8 +193,6 @@
 
         // ページロード時の初期化
         document.addEventListener('DOMContentLoaded', () => {
-            // 初期データを表示 (Jinja2テンプレートがデータを埋め込むことを期待)
-            // Jinja2が初期データを埋め込む場所がないため、直接fetchを呼び出す。
             // 初回表示は「初期化中」の状態にしておき、APIの結果を待つ。
             document.getElementById('scheduler-status').textContent = "初期化中";
             document.getElementById('loading-state').classList.remove('hidden');
