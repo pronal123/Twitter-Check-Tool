@@ -55,37 +55,61 @@ global_data = {
 data_item_count = 0
 
 # -----------------
-# データ取得・分析関数 (CoinGecko APIを使用)
+# データ取得・分析関数 (CoinGecko APIを使用 + 指数関数的バックオフ)
 # -----------------
 def get_real_time_btc_data(data_count: int) -> tuple[int, int, int]:
     """
     CoinGecko APIからBTCのリアルタイム価格を取得します。失敗時はシミュレーションを使用します。
+    レート制限エラー(429)に対応するため、指数関数的バックオフでリトライを行います。
     """
     API_URL = "https://api.coingecko.com/api/v3/simple/price"
     params = {
         'ids': 'bitcoin',
         'vs_currencies': 'usd'
     }
-    
+    MAX_RETRIES = 3 # 最大リトライ回数
     current_price = 0
     
-    try:
-        logging.info("CoinGecko APIからリアルタイムBTC価格を取得中...")
-        response = requests.get(API_URL, params=params, timeout=5)
-        response.raise_for_status() # HTTPエラーがあれば例外を発生させる
-        
-        data = response.json()
-        
-        if 'bitcoin' in data and 'usd' in data['bitcoin']:
-            # 取得した価格を整数に丸めて使用
-            current_price = int(data['bitcoin']['usd'])
-            logging.info(f"CoinGeckoからリアルタイム価格を取得しました: ${current_price:,}")
-        else:
-            logging.warning("CoinGecko APIからのレスポンスに価格データが含まれていませんでした。シミュレーションにフォールバックします。")
-
-    except requests.exceptions.RequestException as e:
-        logging.error(f"CoinGecko APIへの接続またはデータ取得に失敗しました: {e}。シミュレーションにフォールバックします。")
-    
+    for attempt in range(MAX_RETRIES):
+        try:
+            logging.info(f"CoinGecko APIからリアルタイムBTC価格を取得中... (試行 {attempt + 1}/{MAX_RETRIES})")
+            # タイムアウトを設定
+            response = requests.get(API_URL, params=params, timeout=10)
+            
+            # HTTPステータスコードが4xxまたは5xxの場合、例外を発生させる
+            response.raise_for_status() 
+            
+            data = response.json()
+            
+            if 'bitcoin' in data and 'usd' in data['bitcoin']:
+                # 取得した価格を整数に丸めて使用
+                current_price = int(data['bitcoin']['usd'])
+                logging.info(f"CoinGeckoからリアルタイム価格を取得しました: ${current_price:,}")
+                break # 成功したのでループを抜ける
+            else:
+                logging.warning("CoinGecko APIからのレスポンスに価格データが含まれていませんでした。")
+                break # データ形式が不正な場合はリトライしない
+                
+        except requests.exceptions.HTTPError as e:
+            if response.status_code == 429 and attempt < MAX_RETRIES - 1:
+                # レート制限エラー(429)の場合、指数関数的バックオフ
+                wait_time = 2 ** attempt # 1, 2, 4秒待機
+                logging.error(f"CoinGecko APIへの接続またはデータ取得に失敗しました: 429 Too Many Requests。{wait_time}秒後にリトライします。")
+                time.sleep(wait_time)
+            else:
+                # その他のHTTPエラーまたは最終試行の場合
+                logging.error(f"CoinGecko APIへの接続またはデータ取得に失敗しました: {e}。シミュレーションにフォールバックします。")
+                break
+                
+        except requests.exceptions.RequestException as e:
+            # 接続エラー、タイムアウトなどの場合
+            if attempt < MAX_RETRIES - 1:
+                wait_time = 2 ** attempt 
+                logging.error(f"CoinGecko API接続エラー: {e}。{wait_time}秒後にリトライします。")
+                time.sleep(wait_time)
+            else:
+                logging.error(f"CoinGecko API接続エラー: {e}。シミュレーションにフォールバックします。")
+                break
     
     # -----------------
     # フォールバック (APIが失敗した場合、または初期価格が0の場合)
@@ -198,7 +222,6 @@ def generate_chart_image(current_price: int, r1: int, s1: int) -> io.BytesIO:
     # R1 (レジスタンス): 赤色の破線
     ax.axhline(r1, color='#ef4444', linestyle='--', linewidth=1.5, label=f'R1: ${r1:,}')
     # R1にラベルを付与
-    # 日本語フォントの問題を回避するため、ここでは英語/数字のみを使用し、キャプションで日本語を補足します。
     ax.text(df.index[-1], r1, f' R1 (Resistance) ${r1:,}', color='#ef4444', ha='right', va='bottom', fontsize=10, weight='bold', bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', boxstyle='round,pad=0.3'))
 
     # S1 (サポート): 青色の破線
@@ -211,8 +234,10 @@ def generate_chart_image(current_price: int, r1: int, s1: int) -> io.BytesIO:
     ax.text(df.index[-1] + datetime.timedelta(days=0.5), current_price, f' Now ${current_price:,}', color='black', ha='left', va='center', fontsize=11, weight='bold')
 
     # 3. グラフの装飾
+    # 価格取得のソースを判定
+    is_simulated = current_price <= 60000 + 700 
+    source_label = "(CoinGecko API)" if not is_simulated else "(Simulation Fallback)"
     # タイトルにはAPIの使用状況を反映
-    source_label = "(CoinGecko API使用)" if current_price > 0 and current_price != 60000 else "(シミュレーション)"
     ax.set_title(f'BTC Price Action with Key Levels {source_label}', fontsize=16, color='#1f2937', weight='bold')
     ax.set_xlabel('Date', fontsize=12)
     ax.set_ylabel('Price (USD)', fontsize=12)
@@ -277,8 +302,9 @@ def update_report_data():
     formatted_s1 = f"`${s1:,}`"
 
     # 価格取得のソースを判定し、メッセージに含める
+    is_simulated = current_price <= 60000 + 700 
     price_source = "リアルタイム価格 (CoinGecko)"
-    if current_price <= 60000 + 700: # 最初のシミュレーションベース価格に近いかどうかで判定
+    if is_simulated:
         price_source = "シミュレーション価格 (API取得失敗時)"
     
     price_analysis = [
