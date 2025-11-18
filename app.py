@@ -55,6 +55,33 @@ global_data = {
 data_item_count = 0
 
 # -----------------
+# データ取得・分析関数 (将来的にAPI呼び出しに置き換えるモック)
+# -----------------
+def get_real_time_btc_data(data_count: int) -> tuple[int, int, int]:
+    """
+    BTCの現在価格、R1、S1をシミュレーションで取得します。
+    
+    🚨 ユーザーはここを、実際の金融API（例: CoinGecko, Binance, Yahoo Financeなど）
+       を呼び出す実践的なロジックに置き換える必要があります。
+    """
+    # --- 現在はダミー価格生成 ---
+    # データ件数に基づいて価格の基準を変動させる
+    base_price = 60000 
+    price_factor = (data_count // 1000) % 10 
+    
+    # 価格にランダムな変動を加える
+    simulated_price = base_price + price_factor * 2000 + random.randint(-700, 700) 
+        
+    current_price = int(simulated_price)
+    
+    # サポート/レジスタンスレベルの計算（現在価格の±1.5%）
+    r1 = int(current_price * 1.015)  
+    s1 = int(current_price * 0.985)  
+    
+    # 返り値: (現在価格, R1, S1)
+    return current_price, r1, s1
+
+# -----------------
 # Telegram通知関数
 # -----------------
 def send_telegram_message(message: str):
@@ -203,21 +230,13 @@ def update_report_data():
     
     # BTC予測のシミュレーション (実践的なシミュレーションロジックを導入)
     data_count = global_data['data_count']
+    
+    # --- 主要価格帯のシミュレーション (get_real_time_btc_data関数で処理) ---
+    current_price, r1, s1 = get_real_time_btc_data(data_count)
+
     outcomes = {"UP": "上昇 📈", "DOWN": "下降 📉", "SIDE": "レンジ ↔️"}
     predictions = {}
     analysis_details = []
-    
-    # --- 主要価格帯のシミュレーション ---
-    base_price = 60000 
-    price_factor = (data_count // 1000) % 10 
-    
-    simulated_price = base_price + price_factor * 2000 + random.randint(-500, 500) 
-        
-    current_price = int(simulated_price)
-    
-    # サポート/レジスタンスレベルの計算（現在価格の±1.5%）
-    r1 = int(current_price * 1.015)  
-    s1 = int(current_price * 0.985)  
     
     # 価格をカンマ区切りにフォーマット
     formatted_current_price = f"`${current_price:,}`"
@@ -363,7 +382,7 @@ if not scheduler.running:
     
     # 1時間間隔でジョブを追加
     scheduler.add_job(id='report_update_job', func=update_report_data, 
-                      trigger='interval', hours=1, replace_existing=True) # <-- ここを hours=1 に変更
+                      trigger='interval', hours=1, replace_existing=True) 
     
     # スケジューラーを開始
     scheduler.start()
