@@ -19,9 +19,9 @@ logging.basicConfig(level=logging.INFO,
 # アプリケーション初期化
 # -----------------
 # Flaskアプリのインスタンスを作成
-# 修正点: template_folderの指定を削除し、Flaskがルートディレクトリの
-# index.htmlをテンプレートとして使用できるようにします。
-app = Flask(__name__) 
+# 修正点: template_folderをカレントディレクトリ('.')に指定し、
+# app.pyと同じ階層の index.html をテンプレートとして読み込むように修正します。
+app = Flask(__name__, template_folder='.') 
 # スケジューラーのインスタンスを作成
 scheduler = APScheduler()
 
