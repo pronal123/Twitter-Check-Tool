@@ -2,15 +2,26 @@ import datetime
 import logging
 import time
 import os
+import requests 
 from threading import Thread
 
 # Flask関連のインポート
 from flask import Flask, render_template, jsonify
-from flask_apscheduler import APScheduler # <--- スケジューラーをインポート
+from flask_apscheduler import APScheduler # スケジューラーをインポート
+
+# -----------------
+# Telegram Bot設定
+# -----------------
+# 🚨 実際のBotトークンとチャットIDに置き換えてください
+# 環境変数から取得。設定がない場合はダミー値を使用します。
+TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', 'YOUR_BOT_TOKEN_HERE') 
+TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '-1234567890') 
+TELEGRAM_API_URL = f'https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage'
 
 # -----------------
 # ロギング設定
 # -----------------
+# ログ形式を設定
 logging.basicConfig(level=logging.INFO,
                     format='[%(asctime)s] %(levelname)s: %(message)s',
                     datefmt='%Y-%m-%d %H:%M:%S')
@@ -19,8 +30,8 @@ logging.basicConfig(level=logging.INFO,
 # アプリケーション初期化
 # -----------------
 # Flaskアプリのインスタンスを作成
-# 修正点: template_folderをカレントディレクトリ('.')に指定し、
-# app.pyと同じ階層の index.html をテンプレートとして読み込むように修正します。
+# template_folderをカレントディレクトリ('.')に指定し、
+# app.pyと同じ階層の index.html をテンプレートとして読み込むように設定
 app = Flask(__name__, template_folder='.') 
 # スケジューラーのインスタンスを作成
 scheduler = APScheduler()
@@ -35,6 +46,36 @@ global_data = {
 data_item_count = 0
 
 # -----------------
+# Telegram通知関数
+# -----------------
+def send_telegram_message(message: str):
+    """
+    指定されたメッセージをTelegramチャットに送信します。
+    """
+    if TELEGRAM_BOT_TOKEN == 'YOUR_BOT_TOKEN_HERE' or not TELEGRAM_CHAT_ID:
+        logging.warning("Telegram BotトークンまたはチャットIDが設定されていません。通知をスキップします。")
+        return
+
+    payload = {
+        'chat_id': TELEGRAM_CHAT_ID,
+        'text': message,
+        'parse_mode': 'Markdown'
+    }
+    
+    try:
+        # HTTP POSTリクエストを送信
+        response = requests.post(TELEGRAM_API_URL, data=payload, timeout=10) # 10秒のタイムアウトを設定
+        response.raise_for_status() # 4xx, 5xxエラーを発生させる
+        logging.info("Telegram通知を送信しました。")
+    except requests.exceptions.RequestException as e:
+        # リクエスト失敗時のエラー処理
+        logging.error(f"Telegram通知の送信に失敗しました: {e}")
+        # response変数が定義されているかチェックし、レスポンス内容をログに出力
+        if 'response' in locals() and response.text:
+            logging.error(f"Telegram APIレスポンス: {response.text}")
+
+
+# -----------------
 # スケジューリングタスク
 # -----------------
 def update_report_data():
@@ -44,7 +85,7 @@ def update_report_data():
 
     logging.info("スケジュールされたレポート更新タスク開始...")
     
-    # 1. データ取得のシミュレーション (ここではダミーで900日間としています)
+    # 1. データ取得のシミュレーション 
     days_to_fetch = 900
     logging.info(f"APIから過去 {days_to_fetch} 日間のデータ取得を試行中...")
     
@@ -56,12 +97,27 @@ def update_report_data():
     now = datetime.datetime.now()
     
     # 3. グローバル状態の更新
-    global_data['last_updated'] = now.strftime('%Y-%m-%d %H:%M:%S')
+    last_updated_str = now.strftime('%Y-%m-%d %H:%M:%S')
+    
+    global_data['last_updated'] = last_updated_str
     global_data['data_count'] = data_item_count
     global_data['scheduler_status'] = '稼働中'
     
     logging.info(f"データ取得が成功しました。期間: {global_data['data_range']}, 件数: {global_data['data_count']}")
     logging.info("レポート更新タスク完了。")
+    
+    # 4. Telegram通知の実行
+    # カンマ区切りで整形した件数を使用
+    formatted_data_count = f"{data_item_count:,}"
+    report_message = (
+        f"✅ *ML BOT 分析レポート更新完了*\n"
+        f"最終更新日時: `{last_updated_str}`\n"
+        f"処理データ件数: *{formatted_data_count}* 件\n"
+        f"サマリー: 短期的なレンジ取引が推奨されます。"
+    )
+    # スレッド化して通知関数を呼び出し、レポート更新タスクの遅延を防ぐ
+    # requestsライブラリを使用しているため、python-telegram-botライブラリのインポートは不要
+    Thread(target=send_telegram_message, args=(report_message,)).start()
 
 
 # -----------------
@@ -76,6 +132,7 @@ def index():
 # -----------------
 # スケジューラーの初期設定と開始
 # -----------------
+# Gunicorn環境でscheduler.runningのチェックは非常に重要です
 if not scheduler.running:
     # スケジューラー設定
     app.config.update({
@@ -104,10 +161,6 @@ update_report_data()
 
 
 # -----------------
-# サーバー起動 (ローカル開発用を削除)
+# サーバー起動 (ローカル開発用ブロックはGunicornの仕様により削除済み)
 # -----------------
-# Gunicornが直接 app:app を読み込むため、ローカル用の起動ブロックは不要です。
-# if __name__ == '__main__':
-#     port = int(os.environ.get('PORT', 8080))
-#     logging.info(f"🚀 Flaskアプリケーションを起動中... (ポート: {port})")
-#     app.run(host='0.0.0.0', port=port, debug=False)
+# Gunicornが直接 app:app を読み込むため、ここに app.run() は含めません。
