@@ -67,7 +67,9 @@ global_data = {
     'current_price': 0,
     'strategy': 'データ処理中',
     'bias': 'N/A',
-    'predictions': {} # predictionフィールドを追加
+    'predictions': {}, # predictionフィールドを追加
+    'stop_loss_level': 0.0, # 新規: 推奨損切りレベル
+    'stop_loss_reason': 'N/A' # 新規: 損切り根拠
 }
 
 # -----------------
@@ -228,7 +230,7 @@ def calculate_pivot_levels_from_data(H: float, L: float, C: float) -> tuple[floa
 
 def generate_strategy(df: pd.DataFrame) -> dict:
     """
-    最新のテクニカル指標に基づいて、総合的な戦略と予測を決定します。
+    最新のテクニカル指標に基づいて、総合的な戦略と予測、および損切りラインを決定します。
     """
     # MA50やBBandsなど、計算に過去データが必要な指標を持つ行のみを抽出
     # 指標がNaNになる最初の期間をスキップするため、dropna()を使用
@@ -243,7 +245,9 @@ def generate_strategy(df: pd.DataFrame) -> dict:
             'bias': 'データ不足',
             'strategy': 'MA50/BBandsに必要なデータが不足。データ期間を延ばしてください。',
             'details': ['分析に必要な十分な期間のデータが揃っていません。'],
-            'predictions': {'1h': 'N/A', '4h': 'N/A', '12h': 'N/A', '24h': 'N/A'}
+            'predictions': {'1h': 'N/A', '4h': 'N/A', '12h': 'N/A', '24h': 'N/A'},
+            'stop_loss_level': 0.0,
+            'stop_loss_reason': 'N/A'
         }
 
     latest = df_clean.iloc[-1]
@@ -254,6 +258,10 @@ def generate_strategy(df: pd.DataFrame) -> dict:
     ma50 = latest['SMA_50']
     rsi = latest['RSI_14']
     macd_h = latest['MACDh_12_26_9'] # MACDヒストグラム
+    # ボリンジャーバンドを取得
+    bbu = latest['BBU_20_2.0']
+    bbl = latest['BBL_20_2.0']
+
     
     # ピボットポイントの計算（前日のデータを使用）
     # df.iloc[-2] は、最新日（-1）の前の日（-2）のOHLC値を使用
@@ -308,6 +316,40 @@ def generate_strategy(df: pd.DataFrame) -> dict:
         else:
              strategy = f"レンジ取引。S1 ({S1:,.2f}) 付近で買い、R1 ({R1:,.2f}) 付近で売り。"
 
+    # --- 5. リスク管理 (損切りラインの決定) ---
+    stop_loss_level = 0.0
+    stop_loss_reason = "なし（レンジ取引または様子見）"
+
+    if bias == "強い上昇" or bias == "上昇":
+        # 買いポジションを想定し、より強力なサポートを損切りラインとする
+        # BBLの方がS1よりも下にあり、より安全な損切りラインとなる場合 (またはS1を使用)
+        if bbl and S1 and bbl < S1 and bbl < price:
+            # S1とBBLを比較し、S1ブレイクの方が論理的に近いため、S1を優先
+            stop_loss_level = S1
+            stop_loss_reason = "主要サポートライン (S1) のブレイク"
+        elif S1 and S1 < price:
+            stop_loss_level = S1
+            stop_loss_reason = "主要サポートライン (S1) のブレイク"
+        
+        # 損切りラインを戦略テキストに追加
+        if stop_loss_level > 0:
+            strategy += f" **損切り目安**: {stop_loss_reason}（${stop_loss_level:,.2f}）"
+            
+    elif bias == "強い下降" or bias == "下降":
+        # 売りポジションを想定し、より強力なレジスタンスを損切りラインとする
+        # BBUの方がR1よりも上にあり、より安全な損切りラインとなる場合 (またはR1を使用)
+        if bbu and R1 and bbu > R1 and bbu > price:
+             # R1とBBUを比較し、R1ブレイクの方が論理的に近いため、R1を優先
+            stop_loss_level = R1
+            stop_loss_reason = "主要レジスタンスライン (R1) のブレイク"
+        elif R1 and R1 > price:
+            stop_loss_level = R1
+            stop_loss_reason = "主要レジスタンスライン (R1) のブレイク"
+            
+        # 損切りラインを戦略テキストに追加
+        if stop_loss_level > 0:
+            strategy += f" **損切り目安**: {stop_loss_reason}（${stop_loss_level:,.2f}）"
+
     # --- 短期予測 (簡略化) ---
     # MACDヒストグラム (macd_h) がプラスなら買いモメンタム、マイナスなら売りモメンタム
     predictions = {
@@ -323,7 +365,9 @@ def generate_strategy(df: pd.DataFrame) -> dict:
         'bias': bias,
         'strategy': strategy,
         'details': details,
-        'predictions': predictions
+        'predictions': predictions,
+        'stop_loss_level': round(stop_loss_level, 2), # 新規追加: 損切りレベルを丸める
+        'stop_loss_reason': stop_loss_reason # 新規追加
     }
 
 
@@ -359,10 +403,17 @@ def generate_chart_image(df: pd.DataFrame, analysis_result: dict) -> io.BytesIO:
     # --- 3. 最新の主要レベルの描画 ---
     price = analysis_result['price']
     P, R1, S1 = analysis_result['P'], analysis_result['R1'], analysis_result['S1']
-    
+    stop_loss_level = analysis_result['stop_loss_level'] # 新規
+
     # ピボットポイント (P)
     ax.axhline(P, color='#9333ea', linestyle='--', linewidth=1.5, alpha=0.8)
     ax.text(df.index[-1], P, f' P: ${P:,.2f}', color='#9333ea', ha='right', va='center', fontsize=9, bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', boxstyle='round,pad=0.3'))
+
+    # 推奨損切りライン (Stop Loss) の描画
+    if stop_loss_level > 0:
+        ax.axhline(stop_loss_level, color='#f87171', linestyle='-', linewidth=1.5, alpha=0.8)
+        ax.text(df.index[-1], stop_loss_level, f' SL: ${stop_loss_level:,.2f}', color='#f87171', ha='left', va='center', fontsize=9, weight='bold', bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', boxstyle='round,pad=0.3'))
+
 
     # 現在価格の点とラベル
     ax.scatter(df.index[-1], price, color='black', s=80, zorder=5) 
@@ -418,6 +469,8 @@ def update_report_data():
         global_data['strategy'] = 'データ取得エラー'
         global_data['bias'] = 'N/A'
         global_data['predictions'] = {} # predictionsもクリア
+        global_data['stop_loss_level'] = 0.0 # 新規: 損切りレベルをクリア
+        global_data['stop_loss_reason'] = 'N/A' # 新規: 損切り根拠をクリア
         error_msg = f"❌ *BTC分析レポート生成エラー*\n\nデータ取得に失敗しました。ネットワーク接続を確認するか、数分後に再試行してください。\n最終更新: {now.strftime('%Y-%m-%d %H:%M:%S')}"
         Thread(target=send_telegram_message, args=(error_msg,)).start()
         return
@@ -432,6 +485,8 @@ def update_report_data():
         global_data['strategy'] = 'テクニカル分析エラー'
         global_data['bias'] = 'N/A'
         global_data['predictions'] = {} # predictionsもクリア
+        global_data['stop_loss_level'] = 0.0 # 新規: 損切りレベルをクリア
+        global_data['stop_loss_reason'] = 'N/A' # 新規: 損切り根拠をクリア
         error_msg = f"❌ *BTC分析レポート生成エラー*\n\nテクニカル分析中にエラーが発生しました。\n詳細: {str(e)}\n最終更新: {now.strftime('%Y-%m-%d %H:%M:%S')}"
         Thread(target=send_telegram_message, args=(error_msg,)).start()
         return
@@ -448,7 +503,9 @@ def update_report_data():
     global_data['strategy'] = analysis_result['strategy']
     global_data['bias'] = analysis_result['bias']
     global_data['predictions'] = analysis_result['predictions'] # 予測結果を保存
-    
+    global_data['stop_loss_level'] = analysis_result['stop_loss_level'] # 新規: 推奨損切りレベル
+    global_data['stop_loss_reason'] = analysis_result['stop_loss_reason'] # 新規: 損切り根拠
+
     # 5. レポートの整形
     price = analysis_result['price']
     P, R1, S1, ma50, rsi = analysis_result['P'], analysis_result['R1'], analysis_result['S1'], analysis_result['MA50'], analysis_result['RSI']
@@ -456,6 +513,9 @@ def update_report_data():
     strategy = analysis_result['strategy']
     details = analysis_result['details']
     predictions = analysis_result['predictions']
+    # 新しい損切り情報
+    stop_loss_level = analysis_result['stop_loss_level']
+    stop_loss_reason = analysis_result['stop_loss_reason']
     
     # 価格をカンマ区切りにフォーマット
     formatted_current_price = f"`${price:,.2f}`"
@@ -476,6 +536,13 @@ def update_report_data():
 
     prediction_lines = [f"• {tf}後予測: *{predictions[tf]}*" for tf in ["1h", "4h", "12h", "24h"]]
     
+    risk_management_line = ""
+    if stop_loss_level > 0:
+        formatted_stop_loss = f"`${stop_loss_level:,.2f}`"
+        risk_management_line = f"🛑 *推奨損切りライン*: {formatted_stop_loss} ({stop_loss_reason})\n"
+    else:
+        risk_management_line = "⚠️ *損切り設定*: 現在のバイアスでは推奨設定なし（レンジ・様子見）\n"
+
     report_message = (
         f"👑 *BTC実践分析レポート (テクニカルBOT)* 👑\n\n"
         f"📅 最終データ更新: `{last_updated_str}`\n"
@@ -489,6 +556,7 @@ def update_report_data():
         f"--- *総合戦略サマリー* ---\n"
         f"💡 *中期バイアス*: *{bias}* 傾向\n"
         f"🛡️ *推奨戦略*: *{strategy}*\n"
+        f"{risk_management_line}" # ここに損切りラインを挿入
         f"_※ この分析は、実戦的なテクニカル分析に基づきますが、投資助言ではありません。_"
     )
     
@@ -502,6 +570,7 @@ def update_report_data():
             f"📅 更新: `{last_updated_str}`\n"
             f"💰 現在価格: {formatted_current_price}\n"
             f"💡 *中期バイアス*: *{bias}* / 🛡️ *推奨戦略*: {strategy}\n"
+            f"{'🛑 損切り目安: ' + f'${stop_loss_level:,.2f}' if stop_loss_level > 0 else ''}\n" # キャプションにも損切りラインを追記
             f"_詳細は別途送信されるテキストレポートをご確認ください。_"
         )
         
@@ -543,7 +612,7 @@ def status():
 if not scheduler.running:
     app.config.update({
         'SCHEDULER_JOBSTORES': {'default': {'type': 'memory'}},
-        'SCHEDULER_EXECUTORS': {'default': {'type': 'threadpool', 'max_workers': 20}},
+        'SCHEDULERS_EXECUTORS': {'default': {'type': 'threadpool', 'max_workers': 20}},
         'SCHEDULER_API_ENABLED': False 
     })
     
