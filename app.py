@@ -1,6 +1,6 @@
 import datetime
 import logging
-import time
+import time # timeモジュールをインポート
 import os
 import requests 
 from threading import Thread
@@ -66,7 +66,8 @@ global_data = {
     'scheduler_status': '初期化中',
     'current_price': 0,
     'strategy': 'データ処理中',
-    'bias': 'N/A'
+    'bias': 'N/A',
+    'predictions': {} # predictionフィールドを追加
 }
 
 # -----------------
@@ -128,49 +129,66 @@ def send_telegram_photo(photo_buffer: io.BytesIO, caption: str):
 def fetch_btc_ohlcv_data():
     """
     yfinanceからBTC-USDの日足データを取得し、テクニカル分析のためにカラムを整形します。
-    
-    【重要修正】
-    MultiIndexが返された場合、get_level_values(0)を使用してOHLCV名を確実に取得します。
+    レート制限エラーに対処するため、最大3回のリトライロジックを導入しました。
     """
     ticker = "BTC-USD"
     period = "60d" 
     interval = "1d" 
+    max_retries = 3
     
-    try:
-        logging.info(f"yfinanceから{ticker}の過去データ（{period}）を取得中...")
-        # FutureWarningの抑制はここでは行わない
-        df = yf.download(ticker, period=period, interval=interval, progress=False)
-        
-        if df.empty:
-            raise ValueError("取得したデータが空です。")
+    for attempt in range(max_retries):
+        try:
+            logging.info(f"yfinanceから{ticker}の過去データ（{period}）を取得中... (試行 {attempt + 1}/{max_retries})")
             
-        # === MultiIndexフラット化の修正 (より堅牢なget_level_valuesを使用) ===
-        if isinstance(df.columns, pd.MultiIndex):
-            logging.warning("⚠️ yfinanceデータがMultiIndexを返しました。カラム名をフラット化し、再設定します。")
+            # yfinance.downloadは失敗時に空のDataFrameを返すことがあるため、それをチェック
+            df = yf.download(ticker, period=period, interval=interval, progress=False)
             
-            # 通常、単一ティッカーのMultiIndexの場合、レベル0にOHLCV名（Open, Closeなど）がある
-            df.columns = df.columns.get_level_values(0)
-        # ==================================================================
+            if df.empty:
+                # yfinanceのエラーメッセージにRate limitedが含まれている場合があるため、ここでチェック
+                # YFRateLimitErrorの具体的なエラーメッセージはキャッチできないため、空のDataFrameを返した場合もレート制限の可能性として扱う
+                raise ValueError("取得したデータが空です。レート制限の可能性があります。")
+                
+            # === MultiIndexフラット化の修正 (より堅牢なget_level_valuesを使用) ===
+            if isinstance(df.columns, pd.MultiIndex):
+                logging.warning("⚠️ yfinanceデータがMultiIndexを返しました。カラム名をフラット化し、再設定します。")
+                df.columns = df.columns.get_level_values(0)
+            # ==================================================================
+                
+            # インデックス名を'Date'に設定
+            df.index.name = 'Date'
             
-        # インデックス名を'Date'に設定
-        df.index.name = 'Date'
-        
-        # 'Close'列が存在するか確認してから処理
-        if 'Close' not in df.columns:
-            # ログで実際のカラム名を出力してデバッグを容易にする
-            logging.error(f"データ取得後、'Close'カラムが見つかりません。利用可能なカラム: {df.columns.tolist()}")
-            raise KeyError("'Close'")
+            # 'Close'列が存在するか確認してから処理
+            if 'Close' not in df.columns:
+                logging.error(f"データ取得後、'Close'カラムが見つかりません。利用可能なカラム: {df.columns.tolist()}")
+                raise KeyError("'Close'")
 
-        # 終値 (Close) を小数点以下2桁に丸める
-        df['Close'] = df['Close'].round(2)
-        
-        logging.info(f"✅ 過去データ取得成功。件数: {len(df)}")
-        return df
-        
-    except Exception as e:
-        # KeyError 'Close' もここでキャッチされる
-        logging.error(f"❌ yfinanceからデータ取得中にエラーが発生しました: {e}")
-        return pd.DataFrame()
+            # 終値 (Close) を小数点以下2桁に丸める
+            df['Close'] = df['Close'].round(2)
+            
+            logging.info(f"✅ 過去データ取得成功。件数: {len(df)}")
+            return df # 成功したらここで関数を抜ける
+            
+        except Exception as e:
+            # yfinanceのエラーはキャッチしてリトライ判断を行う
+            logging.error(f"❌ yfinanceからデータ取得中にエラーが発生しました: {e}")
+            
+            # レート制限エラーまたはデータ取得失敗（空データ）の場合
+            # str(e)に'Rate limited'が含まれるか、意図的に上げたValueErrorの場合
+            if "Rate limited" in str(e) or "取得したデータが空です" in str(e):
+                if attempt < max_retries - 1:
+                    # 指数関数的バックオフ + ランダムジッター (5s, 10s, 20s + ランダム)
+                    wait_time = 2 ** attempt * 5 + random.randint(1, 5) 
+                    logging.warning(f"⚠️ レート制限の可能性があります。{wait_time}秒待ってリトライします (試行 {attempt + 2}/{max_retries})")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    logging.error("❌ 最大リトライ回数に達しました。データ取得を中止します。")
+                    return pd.DataFrame()
+            
+            # その他の致命的なエラー（KeyErrorなど）はリトライせず失敗
+            return pd.DataFrame()
+
+    return pd.DataFrame() # ループが最後まで実行された場合（リトライ失敗）
 
 
 def analyze_data(df: pd.DataFrame) -> pd.DataFrame:
@@ -381,7 +399,8 @@ def update_report_data():
         global_data['scheduler_status'] = 'エラー'
         global_data['strategy'] = 'データ取得エラー'
         global_data['bias'] = 'N/A'
-        error_msg = f"❌ *BTC分析レポート生成エラー*\n\nデータ取得に失敗しました。ネットワーク接続を確認してください。\n最終更新: {now.strftime('%Y-%m-%d %H:%M:%S')}"
+        global_data['predictions'] = {} # predictionsもクリア
+        error_msg = f"❌ *BTC分析レポート生成エラー*\n\nデータ取得に失敗しました。ネットワーク接続を確認するか、数分後に再試行してください。\n最終更新: {now.strftime('%Y-%m-%d %H:%M:%S')}"
         Thread(target=send_telegram_message, args=(error_msg,)).start()
         return
 
@@ -394,6 +413,7 @@ def update_report_data():
         global_data['scheduler_status'] = 'エラー'
         global_data['strategy'] = 'テクニカル分析エラー'
         global_data['bias'] = 'N/A'
+        global_data['predictions'] = {} # predictionsもクリア
         error_msg = f"❌ *BTC分析レポート生成エラー*\n\nテクニカル分析中にエラーが発生しました。\n詳細: {str(e)}\n最終更新: {now.strftime('%Y-%m-%d %H:%M:%S')}"
         Thread(target=send_telegram_message, args=(error_msg,)).start()
         return
@@ -409,6 +429,7 @@ def update_report_data():
     global_data['current_price'] = analysis_result['price']
     global_data['strategy'] = analysis_result['strategy']
     global_data['bias'] = analysis_result['bias']
+    global_data['predictions'] = analysis_result['predictions'] # 予測結果を保存
     
     # 5. レポートの整形
     price = analysis_result['price']
@@ -483,6 +504,7 @@ def update_report_data():
 @app.route('/')
 def index():
     """ダッシュボードの表示"""
+    # テンプレートにglobal_dataを渡すことで、初回表示時に初期値を埋め込む
     return render_template('index.html', title='BTC実践テクニカル分析 BOT ダッシュボード', data=global_data)
 
 @app.route('/status')
@@ -510,6 +532,7 @@ if not scheduler.running:
     logging.info("✅ スケジューラーを開始しました。")
 
 # アプリ起動時に初回実行をトリガー
+# 初回実行時にもリトライロジックが適用される
 Thread(target=update_report_data).start()
 
 # -----------------
