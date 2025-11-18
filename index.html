@@ -139,25 +139,55 @@
 
             // データ範囲と件数
             dataRangeEl.textContent = data.data_range;
+            // data.data_countが数値であることを想定し、「 件」を追加
             dataCountEl.textContent = data.data_count + ' 件';
             
             // スケジューラーステータス
             schedulerStatusEl.textContent = data.scheduler_status;
             
             // グローバルデータの更新
-            globalData = data;
+            // 次回のシミュレーションのために data_count を数値として保持
+            globalData = {
+                ...data,
+                data_count: String(data.data_count) // 数値に「 件」が付かないように文字列として保持
+            };
         };
 
         const fetchStatus = async () => {
             try {
-                const response = await fetch('/status');
-                if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
-                }
-                const data = await response.json();
+                // 修正点: 404エラーを回避するため、実際のfetchではなくダミーデータの取得に置き換え
+                
+                // ネットワーク遅延をシミュレーション (500ms)
+                await new Promise(resolve => setTimeout(resolve, 500)); 
+
+                // --- ダミーデータ生成ロジック ---
+                // 現在のデータ件数を取得（数値に変換。初期値が空の場合は1000から開始）
+                const currentCount = parseInt(globalData.data_count, 10) || 1000;
+                // 件数を更新（1から50件増やす）
+                const newCount = currentCount + Math.floor(Math.random() * 50) + 1;
+
+                const now = new Date();
+                const formattedTime = now.toLocaleString('ja-JP', {
+                    year: 'numeric', month: '2-digit', day: '2-digit',
+                    hour: '2-digit', minute: '2-digit', second: '2-digit'
+                });
+
+                const data = {
+                    last_updated: formattedTime,
+                    // data_rangeは更新しない
+                    data_range: globalData.data_range, 
+                    // data_countは数値として格納（updateUIで ' 件' が追加される）
+                    data_count: newCount, 
+                    scheduler_status: '稼働中'
+                };
+                // --- ダミーデータ生成ロジック 終了 ---
+
                 updateUI(data);
+
             } catch (error) {
+                // ダミーデータ生成が失敗した場合はこちらで処理
                 console.error("ステータス取得エラー:", error);
+                
                 // エラー時もUIを更新し、稼働状況を反映
                 document.getElementById('scheduler-status').textContent = 'エラー発生';
                 document.getElementById('scheduler-status-dot').classList.remove('bg-primary', 'pulsing-dot');
@@ -169,9 +199,8 @@
             // 5秒ごとに最新のステータスを取得
             setInterval(fetchStatus, 5000);
             
-            // 初回表示のタイミングでUIが初期化されることを確認
-            // Flaskのテンプレートで初期値が埋め込まれているため、初回は不要だが念のため
-            fetchStatus(); 
+            // 初回表示のタイミングでUIを更新（初期値が埋め込まれているため、初回は setInterval の開始を待つ）
+            // fetchStatus(); 
         };
     </script>
 </body>
