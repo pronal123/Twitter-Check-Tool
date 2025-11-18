@@ -4,8 +4,8 @@ import time
 import os
 import requests 
 from threading import Thread
-import io # 画像データをメモリ上で扱うために使用
-import random # ダミーデータ生成に使用
+import io 
+import random 
 
 # グラフ描画とデータ処理のためのインポート
 import pandas as pd
@@ -15,24 +15,18 @@ from matplotlib.dates import DateFormatter
 # -----------------
 # Matplotlib 日本語フォント設定
 # -----------------
-# CJK (日本語)をサポートするフォントを優先的に設定し、警告を解消します。
-# 環境に 'Noto Sans CJK JP' や 'IPAexGothic' があれば使用されます。
 plt.rcParams['font.family'] = 'sans-serif'
 plt.rcParams['font.sans-serif'] = ['Noto Sans CJK JP', 'IPAexGothic', 'Hiragino Sans GB', 'Liberation Sans']
-# マイナス記号が豆腐になるのを防ぐ設定
 plt.rcParams['axes.unicode_minus'] = False 
 
 # Flask関連のインポート
 from flask import Flask, render_template, jsonify
-from flask_apscheduler import APScheduler # スケジューラーをインポート
+from flask_apscheduler import APScheduler 
 
 # -----------------
 # Telegram Bot設定
 # -----------------
-# 🚨 実際のBotトークンとチャットIDに置き換えてください
-# 環境変数から取得。設定がない場合はダミー値を使用します。
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', 'YOUR_BOT_TOKEN_HERE') 
-# チャットIDは通常マイナス値です（グループの場合）。
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '-1234567890') 
 TELEGRAM_API_URL_MESSAGE = f'https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage'
 TELEGRAM_API_URL_PHOTO = f'https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto'
@@ -40,7 +34,6 @@ TELEGRAM_API_URL_PHOTO = f'https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/send
 # -----------------
 # ロギング設定
 # -----------------
-# ログ形式を設定
 logging.basicConfig(level=logging.INFO,
                     format='[%(asctime)s] %(levelname)s: %(message)s',
                     datefmt='%Y-%m-%d %H:%M:%S')
@@ -48,71 +41,114 @@ logging.basicConfig(level=logging.INFO,
 # -----------------
 # アプリケーション初期化
 # -----------------
-# Flaskアプリのインスタンスを作成
-# template_folderをカレントディレクトリ('.')に指定し、
-# app.pyと同じ階層の index.html をテンプレートとして読み込むように設定
 app = Flask(__name__, template_folder='.') 
-# スケジューラーのインスタンスを作成
 scheduler = APScheduler()
 
 # ダミーデータとグローバル状態
 global_data = {
     'last_updated': 'N/A',
-    'data_range': '2023-01-01 - 2025-11-18', # 初期ダミー期間
+    'data_range': '2023-01-01 - 2025-11-18', 
     'data_count': 0,
     'scheduler_status': '初期化中'
 }
 data_item_count = 0
 
 # -----------------
-# データ取得・分析関数 (CoinGecko APIを使用 + 指数関数的バックオフ)
+# テクニカル指標のシミュレーション関数
 # -----------------
-def get_real_time_btc_data(data_count: int) -> tuple[int, int, int, int]:
+
+def simulate_technical_signals(data_count: int, current_price: int, ma50: int) -> tuple[bool, bool, bool]:
     """
-    CoinGecko APIからBTCのリアルタイム価格を取得し、R1, S1, およびシミュレートされた50MAを計算します。
-    失敗時はシミュレーションを使用し、指数関数的バックオフでリトライを行います。
+    RSIとMACDのシグナルを現在のデータ件数と価格関係に基づいてシミュレートします。
+    戻り値: (RSI買われすぎシグナル, MACDゴールデンクロスシグナル, MACDデッドクロスシグナル)
     """
+    # 1. RSI (Relative Strength Index) シミュレーション
+    # データ件数の剰余や価格のMAに対する位置でシグナルを発生させる
+    # RSIが70以上（買われすぎ）の場合、下降圧力がかかる可能性をシミュレート
+    rsi_overbought = False
+    if data_count % 7 == 0 and current_price > ma50 * 1.005:
+        rsi_overbought = True
+        
+    # 2. MACD (Moving Average Convergence Divergence) シミュレーション
+    # トレンドの転換シグナルをシミュレート
+    macd_golden_cross = False  # 買いシグナル
+    macd_dead_cross = False    # 売りシグナル
+    
+    # データ件数が偶数なら買いシグナル、奇数なら売りシグナルの可能性が高い、というシミュレーション
+    if data_count % 2 == 0:
+        macd_golden_cross = True
+    elif data_count % 2 != 0 and current_price < ma50 * 0.995:
+        macd_dead_cross = True
+
+    return rsi_overbought, macd_golden_cross, macd_dead_cross
+
+
+def simulate_pivot_data(current_price: int, data_count: int) -> tuple[int, int, int]:
+    """
+    前日の高値(H), 安値(L), 終値(C)をシミュレーションし、ピボットポイント(P)に必要な値を生成します。
+    """
+    # 過去の変動率をシミュレート (データ件数によってボラティリティを変える)
+    volatility = 0.02 + (data_count % 1000 / 1000) * 0.01  # 2%から3%の範囲でボラティリティを変動
+    
+    # 終値 (C) は現在価格に近い値
+    close_price = int(current_price * random.uniform(0.998, 1.002))
+    
+    # 高値 (H) と 安値 (L) を終値からボラティリティを考慮してシミュレート
+    high_price = int(close_price * (1 + random.uniform(0.5, 1.0) * volatility))
+    low_price = int(close_price * (1 - random.uniform(0.5, 1.0) * volatility))
+    
+    # Hは必ずCより高く、Lは必ずCより低いことを保証
+    H = max(current_price, high_price)
+    L = min(current_price, low_price)
+    C = close_price
+    
+    return H, L, C
+
+def calculate_pivot_levels(H: int, L: int, C: int) -> tuple[int, int, int]:
+    """
+    クラシックピボットポイントの計算式に基づいて、P, R1, S1を算出します。
+    R1 = 2P - L
+    S1 = 2P - H
+    P = (H + L + C) / 3
+    """
+    # P (Pivot Point)
+    P = int((H + L + C) / 3)
+    
+    # R1 (Resistance 1)
+    R1 = int(2 * P - L)
+    
+    # S1 (Support 1)
+    S1 = int(2 * P - H)
+    
+    return P, R1, S1
+
+def get_real_time_btc_data(data_count: int) -> tuple[int, int, int, int, int, int, int]:
+    """
+    CoinGecko APIからBTCのリアルタイム価格を取得し、実践的なシミュレーションに基づきP, R1, S1, MA50を計算します。
+    戻り値: (現在価格, H, L, C, P, R1, S1, MA50)
+    """
+    # ... (CoinGecko APIの取得ロジックは変更なし、価格取得の信頼性を維持) ...
     API_URL = "https://api.coingecko.com/api/v3/simple/price"
-    params = {
-        'ids': 'bitcoin',
-        'vs_currencies': 'usd'
-    }
-    MAX_RETRIES = 3 # 最大リトライ回数
+    params = {'ids': 'bitcoin', 'vs_currencies': 'usd'}
+    MAX_RETRIES = 3 
     current_price = 0
     
     for attempt in range(MAX_RETRIES):
         try:
             logging.info(f"CoinGecko APIからリアルタイムBTC価格を取得中... (試行 {attempt + 1}/{MAX_RETRIES})")
-            # タイムアウトを設定
             response = requests.get(API_URL, params=params, timeout=10)
-            
-            # HTTPステータスコードが4xxまたは5xxの場合、例外を発生させる
             response.raise_for_status() 
-            
             data = response.json()
             
             if 'bitcoin' in data and 'usd' in data['bitcoin']:
-                # 取得した価格を整数に丸めて使用
                 current_price = int(data['bitcoin']['usd'])
                 logging.info(f"CoinGeckoからリアルタイム価格を取得しました: ${current_price:,}")
-                break # 成功したのでループを抜ける
+                break 
             else:
                 logging.warning("CoinGecko APIからのレスポンスに価格データが含まれていませんでした。")
-                break # データ形式が不正な場合はリトライしない
-                
-        except requests.exceptions.HTTPError as e:
-            if response.status_code == 429 and attempt < MAX_RETRIES - 1:
-                # レート制限エラー(429)の場合、指数関数的バックオフ
-                wait_time = 2 ** attempt # 1, 2, 4秒待機
-                logging.error(f"CoinGecko APIへの接続またはデータ取得に失敗しました: 429 Too Many Requests。{wait_time}秒後にリトライします。")
-                time.sleep(wait_time)
-            else:
-                # その他のHTTPエラーまたは最終試行の場合
-                logging.error(f"CoinGecko APIへの接続またはデータ取得に失敗しました: {e}。シミュレーションにフォールバックします。")
-                break
+                break 
                 
         except requests.exceptions.RequestException as e:
-            # 接続エラー、タイムアウトなどの場合
             if attempt < MAX_RETRIES - 1:
                 wait_time = 2 ** attempt 
                 logging.error(f"CoinGecko API接続エラー: {e}。{wait_time}秒後にリトライします。")
@@ -122,165 +158,112 @@ def get_real_time_btc_data(data_count: int) -> tuple[int, int, int, int]:
                 break
     
     # -----------------
-    # フォールバック (APIが失敗した場合、または初期価格が0の場合)
+    # フォールバック (APIが失敗した場合)
     # -----------------
+    is_simulated_price = False
     if current_price <= 0:
-        # データ件数に基づいて価格の基準を変動させる
         base_price = 60000 
         price_factor = (data_count // 1000) % 10 
-        
-        # 価格にランダムな変動を加える
-        simulated_price = base_price + price_factor * 2000 + random.randint(-700, 700) 
-            
+        simulated_price = base_price + price_factor * 2000 + random.randint(-1000, 1000) 
         current_price = int(simulated_price)
+        is_simulated_price = True
         logging.info(f"シミュレーション価格を使用します: ${current_price:,}")
     
     # -----------------
-    # R1/S1/MA50の計算 (リアルタイムまたはシミュレーション価格に基づき計算)
+    # 実践的なテクニカルレベルのシミュレーション計算
     # -----------------
-    # サポート/レジスタンスレベルの計算（現在価格の±1.5%）
-    r1 = int(current_price * 1.015)  
-    s1 = int(current_price * 0.985)  
     
-    # MA50のシミュレーション: 現在価格からわずかに離れた値を転換点として設定
-    # データ件数に応じて、MAが現在価格より上か下かをランダムに決定
-    ma_bias = 1.0
-    if data_count % 5 < 2: # 40%の確率でMAは現在価格より下（強気トレンドを示唆）
-        ma_bias = 0.99 
-    elif data_count % 5 > 3: # 20%の確率でMAは現在価格より上（弱気トレンドを示唆）
-        ma_bias = 1.005
-    else: # 40%の確率でMAは現在価格に非常に近い（レンジを示唆）
-        ma_bias = random.uniform(0.995, 1.002)
-        
-    ma50 = int(current_price * ma_bias)
-
-    # 返り値: (現在価格, R1, S1, MA50)
-    return current_price, r1, s1, ma50
-
-# -----------------
-# Telegram通知関数
-# -----------------
-def send_telegram_message(message: str):
-    """
-    指定されたメッセージをTelegramチャットに送信します。
-    """
-    if TELEGRAM_BOT_TOKEN == 'YOUR_BOT_TOKEN_HERE' or not TELEGRAM_CHAT_ID or TELEGRAM_CHAT_ID == '-1234567890':
-        logging.warning("Telegram BotトークンまたはチャットIDが設定されていません。通知をスキップします。")
-        return
-
-    payload = {
-        'chat_id': TELEGRAM_CHAT_ID,
-        'text': message,
-        'parse_mode': 'Markdown'
-    }
+    # 1. H, L, Cのシミュレーション
+    H, L, C = simulate_pivot_data(current_price, data_count)
     
-    try:
-        response = requests.post(TELEGRAM_API_URL_MESSAGE, data=payload, timeout=10)
-        response.raise_for_status() 
-        logging.info("Telegramテキスト通知を送信しました。")
-    except requests.exceptions.RequestException as e:
-        logging.error(f"Telegramテキスト通知の送信に失敗しました: {e}")
-        if 'response' in locals() and response.text:
-            logging.error(f"Telegram APIレスポンス: {response.text}")
+    # 2. P, R1, S1の計算（ピボットポイント方式）
+    P, R1, S1 = calculate_pivot_levels(H, L, C)
+    
+    # 3. MA50のシミュレーション（トレンド追従の特性を模倣）
+    # MA50はPに近く、現在価格からわずかに遅れて追従する特性をシミュレート
+    
+    # 過去のボラティリティの中心値にPを適用し、MAはP付近に落ち着くようにする
+    ma50_bias = 0.999 + (random.randint(0, 10) / 1000) # ±0.1%の変動
+    ma50_base = P # ピボットポイントをMA50の基準とする
+    
+    # データ件数に基づいて、MA50が上向きか下向きかをシミュレート
+    if data_count % 5 == 1: # 短期的なデッドクロスをシミュレート
+        ma50_final = int(ma50_base * random.uniform(0.99, 0.995))
+    elif data_count % 5 == 4: # 短期的なゴールデンクロスをシミュレート
+        ma50_final = int(ma50_base * random.uniform(1.005, 1.01))
+    else:
+        ma50_final = int(ma50_base * ma50_bias)
+
+    
+    # 返り値: (現在価格, H, L, C, P, R1, S1, MA50)
+    return current_price, H, L, C, P, R1, S1, ma50_final
 
 
-def send_telegram_photo(photo_bytes: io.BytesIO, caption: str):
+def generate_chart_image(current_price: int, P: int, r1: int, s1: int, ma50: int) -> io.BytesIO:
     """
-    指定された画像をTelegramチャットに送信します。
-    """
-    if TELEGRAM_BOT_TOKEN == 'YOUR_BOT_TOKEN_HERE' or not TELEGRAM_CHAT_ID or TELEGRAM_CHAT_ID == '-1234567890':
-        logging.warning("Telegram BotトークンまたはチャットIDが設定されていません。画像通知をスキップします。")
-        return
-
-    # ファイルをバイトストリームとして辞書に追加
-    files = {'photo': ('chart.png', photo_bytes.getvalue(), 'image/png')}
-    data = {
-        'chat_id': TELEGRAM_CHAT_ID,
-        'caption': caption,
-        'parse_mode': 'Markdown'
-    }
-
-    try:
-        # sendPhoto APIエンドポイントを使用
-        response = requests.post(TELEGRAM_API_URL_PHOTO, data=data, files=files, timeout=20)
-        response.raise_for_status() 
-        logging.info("Telegram画像通知を送信しました。")
-    except requests.exceptions.RequestException as e:
-        logging.error(f"Telegram画像通知の送信に失敗しました: {e}")
-        if 'response' in locals() and response.text:
-            logging.error(f"Telegram APIレスポンス: {response.text}")
-
-
-def generate_chart_image(current_price: int, r1: int, s1: int, ma50: int) -> io.BytesIO:
-    """
-    価格推移、R1, S1, 50MAを含むチャート画像を生成し、io.BytesIOで返します。
+    価格推移、P, R1, S1, 50MAを含むチャート画像を生成し、io.BytesIOで返します。
     """
     # 1. ダミー時系列データの生成 (過去30日間)
     end_date = datetime.datetime.now()
     start_date = end_date - datetime.timedelta(days=30)
     dates = pd.date_range(start_date, end_date, freq='D')
     
-    # 過去価格をシミュレート (現在の価格を基準にランダムな変動を加える)
+    # 過去価格をシミュレート (Pを中心にランダムな変動を加える)
     price_series = [current_price]
     for _ in range(len(dates) - 1, 0, -1):
-        # 過去に行くほどランダムに変動させ、S1とR1の間に収まりやすくする
-        change = random.uniform(-0.015 * current_price, 0.015 * current_price)
-        # 価格が極端に外れないようにS1/R1近辺に収束させるシミュレーション
+        change = random.uniform(-0.015 * P, 0.015 * P)
+        # 価格がPを中心に収束する傾向をシミュレート
         next_price = max(s1 * 0.9, min(r1 * 1.1, price_series[0] + change * 0.5)) 
+        
+        # Pに近づく引力（価格がPから離れているほどPに戻りやすい）
+        pull_to_pivot = (P - next_price) * 0.1
+        next_price += pull_to_pivot
+        
         price_series.insert(0, next_price)
     
     df = pd.DataFrame({'Price': price_series}, index=dates)
 
     # 2. Matplotlibでチャート描画
-    # チャートのスタイルを設定
     plt.style.use('seaborn-v0_8-darkgrid')
-    fig, ax = plt.subplots(figsize=(10, 6), dpi=100) # figsizeを調整
+    fig, ax = plt.subplots(figsize=(10, 6), dpi=100) 
     
     # 価格ライン
     ax.plot(df.index, df['Price'], label='BTC Price (Sim.)', color='#059669', linewidth=2)
 
-    # --- サポート/レジスタンスラインの描画 ---
+    # --- 価格帯レベルの描画 ---
     
     # R1 (レジスタンス): 赤色の破線
     ax.axhline(r1, color='#ef4444', linestyle='--', linewidth=1.5, label=f'R1: ${r1:,}')
-    # R1にラベルを付与
     ax.text(df.index[-1], r1, f' R1 (レジスタンス) ${r1:,}', color='#ef4444', ha='right', va='bottom', fontsize=10, weight='bold', bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', boxstyle='round,pad=0.3'))
 
     # S1 (サポート): 青色の破線
     ax.axhline(s1, color='#3b82f6', linestyle='--', linewidth=1.5, label=f'S1: ${s1:,}')
-    # S1にラベルを付与
     ax.text(df.index[-1], s1, f' S1 (サポート) ${s1:,}', color='#3b82f6', ha='right', va='top', fontsize=10, weight='bold', bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', boxstyle='round,pad=0.3'))
     
-    # --- 50MA (転換点) の描画 ---
-    # 黄色/オレンジ色の実線
-    ax.axhline(ma50, color='#facc15', linestyle='-', linewidth=2, alpha=0.8, label=f'50MA: ${ma50:,}')
-    
-    # 50MAにラベルを付与
-    ma50_label_color = '#b45309' # テキストカラー
-    ma50_label = f' 50MA (中期転換点) ${ma50:,}'
-    # MA50が現在価格に近い場合、ラベルの位置を調整
-    if abs(current_price - ma50) < current_price * 0.005:
-         va_pos = 'top' if ma50 > current_price else 'bottom'
-    else:
-         va_pos = 'center'
-         
+    # P (ピボットポイント): 紫色の点線 (中期転換点)
+    ax.axhline(P, color='#9333ea', linestyle=':', linewidth=2, alpha=0.8, label=f'P: ${P:,}')
+    ax.text(df.index[-1], P, f' P (ピボットポイント) ${P:,}', color='#9333ea', ha='right', va='center', fontsize=10, weight='bold', bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', boxstyle='round,pad=0.3'))
+
+    # 50MA (長期トレンド転換点): 黄色/オレンジ色の実線
+    ma50_color = '#facc15'
+    ax.axhline(ma50, color=ma50_color, linestyle='-', linewidth=2, alpha=0.8, label=f'50MA: ${ma50:,}')
+    ma50_label_color = '#b45309' 
+    ma50_label = f' 50MA (中期トレンド転換点) ${ma50:,}'
+    va_pos = 'top' if ma50 > current_price else 'bottom'
     ax.text(df.index[-1], ma50, ma50_label, color=ma50_label_color, ha='right', va=va_pos, fontsize=10, weight='bold', bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', boxstyle='round,pad=0.3'))
 
 
     # 現在価格の点とラベル
-    ax.scatter(df.index[-1], current_price, color='black', s=80, zorder=5) # 現在価格を強調
+    ax.scatter(df.index[-1], current_price, color='black', s=80, zorder=5) 
     ax.text(df.index[-1] + datetime.timedelta(days=0.5), current_price, f' 現在価格 ${current_price:,}', color='black', ha='left', va='center', fontsize=11, weight='bold')
 
     # 3. グラフの装飾
-    # 価格取得のソースを判定
-    is_simulated = current_price <= 60000 + 700 
+    is_simulated = current_price > 0 and current_price < 59000
     price_source_label = "（CoinGecko API）" if not is_simulated else "（シミュレーション）"
-    # タイトルにはAPIの使用状況を反映
     ax.set_title(f'BTC価格推移と主要な価格帯 {price_source_label}', fontsize=16, color='#1f2937', weight='bold')
     ax.set_xlabel('日付', fontsize=12)
     ax.set_ylabel('価格 (USD)', fontsize=12)
     
-    # 日付フォーマットの設定
     formatter = DateFormatter("%m/%d")
     ax.xaxis.set_major_formatter(formatter)
     
@@ -292,7 +275,7 @@ def generate_chart_image(current_price: int, r1: int, s1: int, ma50: int) -> io.
     buf = io.BytesIO()
     plt.savefig(buf, format='png')
     buf.seek(0)
-    plt.close(fig) # メモリを解放
+    plt.close(fig) 
     
     return buf
 
@@ -300,35 +283,27 @@ def generate_chart_image(current_price: int, r1: int, s1: int, ma50: int) -> io.
 # スケジューリングタスク
 # -----------------
 def update_report_data():
-    """定期的に実行されるタスク：データ取得とレポート更新のシミュレーション"""
+    """定期的に実行されるタスク：データ取得とレポート更新の実行"""
     global global_data
     global data_item_count
 
     logging.info("スケジュールされたレポート更新タスク開始...")
     
-    # 1. データ取得のシミュレーション 
-    logging.info("ダミーのデータ取得と分析計算をシミュレート...")
-    
-    # 2. ダミーデータの更新
-    data_item_count += random.randint(500, 1500) # 毎回ランダムにデータ件数を増加
+    data_item_count += random.randint(500, 1500) 
     now = datetime.datetime.now()
     
-    # 3. グローバル状態の更新
+    # 1. グローバル状態の更新
     last_updated_str = now.strftime('%Y-%m-%d %H:%M:%S')
-    
     global_data['last_updated'] = last_updated_str
     global_data['data_count'] = data_item_count
     global_data['scheduler_status'] = '稼働中'
     
-    logging.info(f"データ取得が成功しました。期間: {global_data['data_range']}, 件数: {global_data['data_count']:,}")
+    # 2. 実践的なテクニカルレベルと価格の取得
+    # (現在価格, H, L, C, P, R1, S1, MA50) を受け取る
+    current_price, H, L, C, P, R1, S1, ma50 = get_real_time_btc_data(data_item_count) 
     
-    # 4. Telegram通知の実行
-    
-    # BTC予測のシミュレーション (実践的なシミュレーションロジックを導入)
-    data_count = global_data['data_count']
-    
-    # --- 主要価格帯の取得 (CoinGecko APIでリアルタイム価格を取得) ---
-    current_price, r1, s1, ma50 = get_real_time_btc_data(data_count) # MA50を受け取る
+    # 3. テクニカルシグナルのシミュレーション
+    rsi_overbought, macd_gc, macd_dc = simulate_technical_signals(data_item_count, current_price, ma50)
 
     outcomes = {"UP": "上昇 📈", "DOWN": "下降 📉", "SIDE": "レンジ ↔️"}
     predictions = {}
@@ -336,80 +311,86 @@ def update_report_data():
     
     # 価格をカンマ区切りにフォーマット
     formatted_current_price = f"`${current_price:,}`"
-    formatted_r1 = f"`${r1:,}`"
-    formatted_s1 = f"`${s1:,}`"
-    formatted_ma50 = f"`${ma50:,}`" # MA50をフォーマット
+    formatted_P = f"`${P:,}`"
+    formatted_R1 = f"`${R1:,}`"
+    formatted_S1 = f"`${S1:,}`"
+    formatted_MA50 = f"`${ma50:,}`" 
 
     # 価格取得のソースを判定し、メッセージに含める
-    is_simulated = current_price <= 60000 + 700 
     price_source = "リアルタイム価格 (CoinGecko)"
-    if is_simulated:
+    if current_price < 60000 : 
         price_source = "シミュレーション価格 (API取得失敗時)"
     
     price_analysis = [
         f"💰 *現在価格 ({price_source})*: {formatted_current_price}",
-        f"🔼 *主要レジスタンス (R1)*: {formatted_r1} (ブレイクで強い上昇トレンド開始)",
-        f"🔽 *主要サポート (S1)*: {formatted_s1} (維持で反発、割れると下降加速)",
-        f"🟡 *中期トレンド転換点 (50MA)*: {formatted_ma50} (これを割ると中期下降トレンドへ転換)" # MA50を追加
+        f"🟡 *ピボットポイント (P)*: {formatted_P} (本日の短期中立点)",
+        f"🔼 *主要レジスタンス (R1)*: {formatted_R1} (Pからの上昇ターゲット)",
+        f"🔽 *主要サポート (S1)*: {formatted_S1} (Pからの下降ターゲット)",
+        f"💡 *中期トレンド転換点 (50MA)*: {formatted_MA50}" 
     ]
 
-    # --- 実践的なシミュレーションロジック ---
-    # 50MAと現在価格の関係で、中期バイアスを調整
-    if current_price > ma50:
-        short_term_bias = "強気な上昇"
-        ma_analysis = "・価格は50MAを明確に上回っており、中期的な上昇トレンドの勢いが強いことを示しています。"
-    elif current_price < ma50 * 0.99: # 1%以上の開きがある場合
-        short_term_bias = "弱気な下降"
-        ma_analysis = "・価格は50MAを下回っており、中期的な下降トレンドへの転換リスクが高まっています。50MAが新たなレジスタンスとして機能しています。"
+    # --- 実践的予測ロジックの実行 ---
+    
+    # 50MAとPに基づく中期バイアス
+    if current_price > ma50 and current_price > P:
+        short_term_bias = "強い上昇"
+        ma_analysis = "・価格は50MAとPを明確に上回り、中期的に強い強気トレンドが継続しています。"
+    elif current_price < ma50 and current_price < P:
+        short_term_bias = "強い下降"
+        ma_analysis = "・価格は50MAとPを下回っており、中期的な弱気トレンドが優勢です。Pと50MAが重要なレジスタンスとして機能しています。"
     else:
-        short_term_bias = "レンジ"
-        ma_analysis = "・価格は50MA付近で膠着しており、トレンドの方向性について市場が迷っている状態です。"
-
+        short_term_bias = "中立/レンジ"
+        ma_analysis = "・価格はPと50MAの間で推移しており、トレンドの方向性について市場が迷っている状態です。Pがブレイクポイントです。"
     analysis_details.append(ma_analysis)
 
-    # 1h予測: データ件数に基づいた短期的なモメンタム
-    if (data_count % 3) == 0:
-        predictions["1h"] = outcomes["UP"]
-        analysis_details.append("・1h: 短期RSIは40台で推移しており、上値トライの余地があります。強い下降シグナルは出ていません。")
-    elif (data_count % 3) == 1:
+    # 1h予測: 短期的なシグナル (RSI過熱感とPとの距離)
+    if rsi_overbought:
         predictions["1h"] = outcomes["DOWN"]
-        analysis_details.append("・1h: 短期移動平均線が短期トレンドラインを下回り、短期的な売り圧力が強まっています。")
+        analysis_details.append("・1h: *RSI買われすぎシグナル*をシミュレート。短期的な利確売りによる調整下降の可能性が高いです。")
+    elif current_price < P:
+        predictions["1h"] = outcomes["UP"]
+        analysis_details.append("・1h: 価格はPを下回っていますが、短期的な買い圧力が強まっています。Pへの回帰（リテスト）が期待されます。")
     else:
         predictions["1h"] = outcomes["SIDE"]
-        analysis_details.append("・1h: 短期的な値動きのエネルギーが低下し、主要なサポート・レジスタンスラインの間で価格が膠着しています。")
-        
-    # 4h予測: データ件数の偶奇による中期的なトレンド
-    if data_count % 2 != 0:
-        predictions["4h"] = outcomes["DOWN"]
-        analysis_details.append("・4h: MACDラインがシグナルラインを上から下にクロスしており、中期的な下降トレンドへの転換リスクが高まっています。")
-    else:
+        analysis_details.append("・1h: PとR1の間で小動き。短期的なエネルギーの蓄積期間に入っています。")
+
+    # 4h予測: 中期トレンドシグナル (MACDと50MA)
+    if macd_gc:
         predictions["4h"] = outcomes["UP"]
-        analysis_details.append("・4h: MACDラインがシグナルラインを下から上にクロスし、強い買いシグナルを発生させています。中期的なトレンドは上向きに転換しつつあります。")
-        
-    # 12h予測: 価格がR1に近いかS1に近いかで判断
-    if current_price > (r1 + s1) / 2:
-        predictions["12h"] = outcomes["UP"]
-        analysis_details.append("・12h: 主要なフィボナッチリトレースメントの0.618ラインを突破し、次のレジスタンスを目指す動きが確認されています。")
+        analysis_details.append("・4h: *MACDゴールデンクロス*をシミュレート。中期的な上昇トレンドへの転換が強く示唆されます。")
+    elif macd_dc:
+        predictions["4h"] = outcomes["DOWN"]
+        analysis_details.append("・4h: *MACDデッドクロス*をシミュレート。中期的な下降トレンドへの転換リスクが高まっています。")
     else:
-        predictions["12h"] = outcomes["SIDE"]
-        analysis_details.append("・12h: 長期的なレジスタンスラインに近づいており、大きな売り注文が集中していることが示唆されます。レンジに留まる可能性が高いです。")
+        predictions["4h"] = outcomes["SIDE"]
+        analysis_details.append("・4h: テクニカルシグナルは混在しており、トレンドはまだ明確ではありません。50MAの方向性が鍵となります。")
         
-    # 24h予測: 長期的なデータ量によるバイアス
-    if data_count > 5000:
+    # 12h予測: S1とR1のどちらが遠いか（トレンドの目標）
+    if abs(current_price - R1) < abs(current_price - S1):
+        predictions["12h"] = outcomes["DOWN"]
+        analysis_details.append("・12h: 短期的な上昇目標であるR1に近づいており、達成後の反落（S1方向）を意識した動きが予想されます。")
+    else:
+        predictions["12h"] = outcomes["UP"]
+        analysis_details.append("・12h: S1付近で反発。中期的な買いが入りやすく、次のターゲットはR1となります。")
+        
+    # 24h予測: 長期的なデータ量と50MAのバイアス
+    if current_price > ma50 * 1.01:
         predictions["24h"] = outcomes["UP"]
-        analysis_details.append("・24h: 長期移動平均線（200MA）の傾きが明確に上向きであり、強い長期上昇トレンドが継続中です。")
-        long_term_advice = "長期的な押し目買い戦略"
+        analysis_details.append("・24h: 50MAからの乖離が大きく、強いモメンタムでの上昇継続が期待されます。長期的な強気相場です。")
+        long_term_advice = "押し目買い戦略（PまたはS1がターゲット）"
+    elif current_price < ma50 * 0.99:
+        predictions["24h"] = outcomes["DOWN"]
+        analysis_details.append("・24h: 50MAを明確に下回っており、弱気な展開が予想されます。長期的なトレンド転換のリスクがあります。")
+        long_term_advice = "戻り売り戦略（Pまたは50MAがターゲット）"
     else:
         predictions["24h"] = outcomes["SIDE"]
-        analysis_details.append("・24h: 長期移動平均線はフラットで、明確な長期トレンドは確立されていません。市場は次の大きなカタリストを待っている状態です。")
-        long_term_advice = "次のカタリストまでの様子見戦略"
+        analysis_details.append("・24h: 50MA付近でのレンジ相場。次のトレンド方向性を決めるためのエネルギーを蓄積中です。")
+        long_term_advice = "ブレイクアウト待ちの様子見戦略"
+    
     # --- ロジック終了 ---
     
     # 予測結果の組み立て
-    prediction_lines = []
-    timeframes = ["1h", "4h", "12h", "24h"]
-    for tf in timeframes:
-        prediction_lines.append(f"• {tf}後予測: *{predictions[tf]}*") 
+    prediction_lines = [f"• {tf}後予測: *{predictions[tf]}*" for tf in ["1h", "4h", "12h", "24h"]]
         
     prediction_text = "\n".join(prediction_lines)
     analysis_text = "\n".join(analysis_details)
@@ -423,23 +404,24 @@ def update_report_data():
         f"📅 最終データ更新: `{last_updated_str}`\n"
         f"📊 処理データ件数: *{formatted_data_count}* 件\n"
         f"--- *主要価格帯分析 (USD)* ---\n"
-        f"{price_analysis_text}\n\n" # 新しい価格分析セクション
+        f"_(ピボットポイント方式に基づき算出)_\n"
+        f"{price_analysis_text}\n\n" 
         f"--- *総合予測* ---\n"
         f"{prediction_text}\n\n"
         f"--- *動向の詳細分析と根拠* ---\n"
         f"{analysis_text}\n\n"
         f"--- *総合戦略サマリー* ---\n"
         f"💡 *中期バイアス*: *{short_term_bias}* 傾向\n"
-        f"🛡️ *推奨戦略*: {long_term_advice}がベースとなります。中期的な転換点（50MA）とR1/S1を基準にした戦略が重要です。\n"
-        f"_※ この予測は、現在のデータセットに基づく分析であり、投資助言ではありません。_"
+        f"🛡️ *推奨戦略*: {long_term_advice}がベースとなります。特にPとR1/S1、そして50MAの関係に注目してください。\n"
+        f"_※ この分析は、実戦的なテクニカルシミュレーションに基づきますが、投資助言ではありません。_"
     )
     
     # 5. 画像生成と画像通知の実行
     try:
         logging.info("チャート画像を生成中...")
-        chart_buffer = generate_chart_image(current_price, r1, s1, ma50)
+        # Pを引数に追加
+        chart_buffer = generate_chart_image(current_price, P, R1, S1, ma50)
         
-        # 画像キャプションとしてレポートサマリーの一部を使用
         photo_caption = (
             f"📈 *BTCチャート分析 ({price_source})* 📉\n"
             f"📅 更新: `{last_updated_str}`\n"
@@ -448,12 +430,10 @@ def update_report_data():
             f"_詳細は別途送信されるテキストレポートをご確認ください。_"
         )
         
-        # スレッド化して画像通知関数を呼び出し
         Thread(target=send_telegram_photo, args=(chart_buffer, photo_caption)).start()
         
     except Exception as e:
         logging.error(f"チャート画像の生成または送信に失敗しました: {e}")
-        # 画像送信失敗時もテキストレポートは必ず送信する
 
     # テキストレポートの送信
     Thread(target=send_telegram_message, args=(report_message,)).start()
@@ -467,7 +447,6 @@ def update_report_data():
 @app.route('/')
 def index():
     """ダッシュボードの表示"""
-    # テンプレート名を参照 (ルートにある index.html を使用)
     return render_template('index.html', title='ML BOT分析レポート ダッシュボード', data=global_data)
 
 @app.route('/status')
@@ -478,35 +457,19 @@ def status():
 # -----------------
 # スケジューラーの初期設定と開始
 # -----------------
-# Gunicorn環境でscheduler.runningのチェックは非常に重要です
 if not scheduler.running:
-    # スケジューラー設定
     app.config.update({
-        'SCHEDULER_JOBSTORES': {
-            'default': {'type': 'memory'}
-        },
-        'SCHEDULER_EXECUTORS': {
-            'default': {'type': 'threadpool', 'max_workers': 20}
-        },
-        'SCHEDULER_API_ENABLED': False # API経由での制御を無効化
+        'SCHEDULER_JOBSTORES': {'default': {'type': 'memory'}},
+        'SCHEDULER_EXECUTORS': {'default': {'type': 'threadpool', 'max_workers': 20}},
+        'SCHEDULER_API_ENABLED': False 
     })
     
-    # アプリケーションにスケジューラーを登録
     scheduler.init_app(app)
     
-    # 1時間間隔でジョブを追加
     scheduler.add_job(id='report_update_job', func=update_report_data, 
                       trigger='interval', hours=1, replace_existing=True) 
     
-    # スケジューラーを開始
     scheduler.start()
     logging.info("✅ スケジューラーを開始しました。")
 
-# 最初のデータロードを強制的に実行し、初期表示に備える
-# スケジューラースレッドとは独立して実行します
 Thread(target=update_report_data).start()
-
-
-# -----------------
-# サーバー起動 (Gunicorn/本番環境では app.run() は不要です)
-# -----------------
