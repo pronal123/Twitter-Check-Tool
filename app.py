@@ -21,14 +21,11 @@ import pandas_ta as ta
 # Matplotlib 日本語フォント設定
 # -----------------
 # 注: 環境によっては'Noto Sans CJK JP'が利用できない場合があります。その場合はIPAexGothicなどがフォールバックされます。
-# デプロイ環境で日本語フォントが利用できない場合は、この設定行をコメントアウトしてください。
-# Noto Sans CJK JPはGoogleによって提供されるオープンソースのフォントで、多くのLinux環境で利用可能です。
 try:
     plt.rcParams['font.family'] = 'sans-serif'
     plt.rcParams['font.sans-serif'] = ['Noto Sans CJK JP', 'IPAexGothic', 'Hiragino Sans GB', 'Liberation Sans']
     plt.rcParams['axes.unicode_minus'] = False 
 except Exception as e:
-    # フォント設定が失敗した場合のフォールバック
     logging.warning(f"日本語フォント設定に失敗しました: {e}. 英語フォントで続行します。")
 
 # Flask関連のインポート
@@ -64,7 +61,7 @@ scheduler = APScheduler()
 # グローバル状態（ダッシュボード表示用）
 global_data = {
     'last_updated': 'N/A',
-    'data_range': '過去10日間 (1d インターバル)', 
+    'data_range': '過去60日間 (1d インターバル)', 
     'data_count': 0,
     'scheduler_status': '初期化中',
     'current_price': 0,
@@ -130,22 +127,34 @@ def send_telegram_photo(photo_buffer: io.BytesIO, caption: str):
 
 def fetch_btc_ohlcv_data():
     """
-    yfinanceからBTC-USDの日足データを取得します。（過去10日間）
+    yfinanceからBTC-USDの日足データを取得します。（過去60日間）
+    
+    【重要修正】
+    yfinanceが返す可能性のあるMultiIndex（複合インデックス）を処理し、
+    pandas_taが期待する単一のカラムインデックスにフラット化します。
     """
     ticker = "BTC-USD"
-    # 短期間のテストを想定し10日間に設定。MA50の計算のためにはより長い期間が必要。
     period = "60d" 
     interval = "1d" 
     
     try:
         logging.info(f"yfinanceから{ticker}の過去データ（{period}）を取得中...")
-        # yfinanceのデータ取得はリトライ機能が組み込まれていないため、単純にダウンロードを試みます。
         df = yf.download(ticker, period=period, interval=interval, progress=False)
         
         if df.empty:
             raise ValueError("取得したデータが空です。")
             
+        # === MultiIndexフラット化の修正 ===
+        if isinstance(df.columns, pd.MultiIndex):
+            logging.warning("⚠️ yfinanceデータがMultiIndexを返しました。カラム名をフラット化しています。")
+            # 通常、単一ティッカーの場合、レベル0がティッカー名、レベル1がカラム名（Open, Highなど）
+            # レベル0を削除して、カラムをフラット化します。
+            df.columns = df.columns.droplevel(0)
+        # ==================================
+            
+        # インデックス名を'Date'に設定
         df.index.name = 'Date'
+        # 終値 (Close) を小数点以下2桁に丸める
         df['Close'] = df['Close'].round(2)
         
         logging.info(f"✅ 過去データ取得成功。件数: {len(df)}")
@@ -474,8 +483,7 @@ if not scheduler.running:
     
     scheduler.init_app(app)
     
-    # 実践的分析のため、更新頻度を下げて日足ベースの分析に合わせる（例：6時間ごと）
-    # アプリケーションの起動後、6時間ごとにupdate_report_dataが実行されます。
+    # 6時間ごとにupdate_report_dataを実行
     scheduler.add_job(id='report_update_job', func=update_report_data, 
                       trigger='interval', hours=6, replace_existing=True) 
     
@@ -486,11 +494,8 @@ if not scheduler.running:
 Thread(target=update_report_data).start()
 
 # -----------------
-# サーバーの実行 (ポートバインディングの修正)
+# サーバーの実行 (Gunicornが使用されないローカル環境向け)
 # -----------------
-# RenderなどのPaaS環境では、Gunicornが環境変数PORTを使用してこのアプリを実行します。
-# 'if __name__ == '__main__':'ブロックはローカルテスト用ですが、
-# 環境変数PORTの読み込みは、Gunicornが起動に失敗したという以前のログメッセージに対応しています。
 if __name__ == '__main__':
     # 環境変数PORTが存在すればそれを使用し、なければデフォルトの5000を使用
     port = int(os.environ.get('PORT', 5000))
