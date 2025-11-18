@@ -67,10 +67,10 @@ data_item_count = 0
 # -----------------
 # データ取得・分析関数 (CoinGecko APIを使用 + 指数関数的バックオフ)
 # -----------------
-def get_real_time_btc_data(data_count: int) -> tuple[int, int, int]:
+def get_real_time_btc_data(data_count: int) -> tuple[int, int, int, int]:
     """
-    CoinGecko APIからBTCのリアルタイム価格を取得します。失敗時はシミュレーションを使用します。
-    レート制限エラー(429)に対応するため、指数関数的バックオフでリトライを行います。
+    CoinGecko APIからBTCのリアルタイム価格を取得し、R1, S1, およびシミュレートされた50MAを計算します。
+    失敗時はシミュレーションを使用し、指数関数的バックオフでリトライを行います。
     """
     API_URL = "https://api.coingecko.com/api/v3/simple/price"
     params = {
@@ -136,14 +136,26 @@ def get_real_time_btc_data(data_count: int) -> tuple[int, int, int]:
         logging.info(f"シミュレーション価格を使用します: ${current_price:,}")
     
     # -----------------
-    # R1/S1の計算 (リアルタイムまたはシミュレーション価格に基づき計算)
+    # R1/S1/MA50の計算 (リアルタイムまたはシミュレーション価格に基づき計算)
     # -----------------
     # サポート/レジスタンスレベルの計算（現在価格の±1.5%）
     r1 = int(current_price * 1.015)  
     s1 = int(current_price * 0.985)  
     
-    # 返り値: (現在価格, R1, S1)
-    return current_price, r1, s1
+    # MA50のシミュレーション: 現在価格からわずかに離れた値を転換点として設定
+    # データ件数に応じて、MAが現在価格より上か下かをランダムに決定
+    ma_bias = 1.0
+    if data_count % 5 < 2: # 40%の確率でMAは現在価格より下（強気トレンドを示唆）
+        ma_bias = 0.99 
+    elif data_count % 5 > 3: # 20%の確率でMAは現在価格より上（弱気トレンドを示唆）
+        ma_bias = 1.005
+    else: # 40%の確率でMAは現在価格に非常に近い（レンジを示唆）
+        ma_bias = random.uniform(0.995, 1.002)
+        
+    ma50 = int(current_price * ma_bias)
+
+    # 返り値: (現在価格, R1, S1, MA50)
+    return current_price, r1, s1, ma50
 
 # -----------------
 # Telegram通知関数
@@ -199,9 +211,9 @@ def send_telegram_photo(photo_bytes: io.BytesIO, caption: str):
             logging.error(f"Telegram APIレスポンス: {response.text}")
 
 
-def generate_chart_image(current_price: int, r1: int, s1: int) -> io.BytesIO:
+def generate_chart_image(current_price: int, r1: int, s1: int, ma50: int) -> io.BytesIO:
     """
-    価格推移、R1, S1を含むチャート画像を生成し、io.BytesIOで返します。
+    価格推移、R1, S1, 50MAを含むチャート画像を生成し、io.BytesIOで返します。
     """
     # 1. ダミー時系列データの生成 (過去30日間)
     end_date = datetime.datetime.now()
@@ -231,8 +243,7 @@ def generate_chart_image(current_price: int, r1: int, s1: int) -> io.BytesIO:
     
     # R1 (レジスタンス): 赤色の破線
     ax.axhline(r1, color='#ef4444', linestyle='--', linewidth=1.5, label=f'R1: ${r1:,}')
-    # R1にラベルを付与 (日本語の警告を回避するため、ここで日本語ラベルを使用しないように調整することも可能ですが、
-    # 今回はグローバル設定で対応します。)
+    # R1にラベルを付与
     ax.text(df.index[-1], r1, f' R1 (レジスタンス) ${r1:,}', color='#ef4444', ha='right', va='bottom', fontsize=10, weight='bold', bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', boxstyle='round,pad=0.3'))
 
     # S1 (サポート): 青色の破線
@@ -240,6 +251,22 @@ def generate_chart_image(current_price: int, r1: int, s1: int) -> io.BytesIO:
     # S1にラベルを付与
     ax.text(df.index[-1], s1, f' S1 (サポート) ${s1:,}', color='#3b82f6', ha='right', va='top', fontsize=10, weight='bold', bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', boxstyle='round,pad=0.3'))
     
+    # --- 50MA (転換点) の描画 ---
+    # 黄色/オレンジ色の実線
+    ax.axhline(ma50, color='#facc15', linestyle='-', linewidth=2, alpha=0.8, label=f'50MA: ${ma50:,}')
+    
+    # 50MAにラベルを付与
+    ma50_label_color = '#b45309' # テキストカラー
+    ma50_label = f' 50MA (中期転換点) ${ma50:,}'
+    # MA50が現在価格に近い場合、ラベルの位置を調整
+    if abs(current_price - ma50) < current_price * 0.005:
+         va_pos = 'top' if ma50 > current_price else 'bottom'
+    else:
+         va_pos = 'center'
+         
+    ax.text(df.index[-1], ma50, ma50_label, color=ma50_label_color, ha='right', va=va_pos, fontsize=10, weight='bold', bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', boxstyle='round,pad=0.3'))
+
+
     # 現在価格の点とラベル
     ax.scatter(df.index[-1], current_price, color='black', s=80, zorder=5) # 現在価格を強調
     ax.text(df.index[-1] + datetime.timedelta(days=0.5), current_price, f' 現在価格 ${current_price:,}', color='black', ha='left', va='center', fontsize=11, weight='bold')
@@ -301,7 +328,7 @@ def update_report_data():
     data_count = global_data['data_count']
     
     # --- 主要価格帯の取得 (CoinGecko APIでリアルタイム価格を取得) ---
-    current_price, r1, s1 = get_real_time_btc_data(data_count)
+    current_price, r1, s1, ma50 = get_real_time_btc_data(data_count) # MA50を受け取る
 
     outcomes = {"UP": "上昇 📈", "DOWN": "下降 📉", "SIDE": "レンジ ↔️"}
     predictions = {}
@@ -311,6 +338,7 @@ def update_report_data():
     formatted_current_price = f"`${current_price:,}`"
     formatted_r1 = f"`${r1:,}`"
     formatted_s1 = f"`${s1:,}`"
+    formatted_ma50 = f"`${ma50:,}`" # MA50をフォーマット
 
     # 価格取得のソースを判定し、メッセージに含める
     is_simulated = current_price <= 60000 + 700 
@@ -321,22 +349,33 @@ def update_report_data():
     price_analysis = [
         f"💰 *現在価格 ({price_source})*: {formatted_current_price}",
         f"🔼 *主要レジスタンス (R1)*: {formatted_r1} (ブレイクで強い上昇トレンド開始)",
-        f"🔽 *主要サポート (S1)*: {formatted_s1} (維持で反発、割れると下降加速)"
+        f"🔽 *主要サポート (S1)*: {formatted_s1} (維持で反発、割れると下降加速)",
+        f"🟡 *中期トレンド転換点 (50MA)*: {formatted_ma50} (これを割ると中期下降トレンドへ転換)" # MA50を追加
     ]
 
     # --- 実践的なシミュレーションロジック ---
+    # 50MAと現在価格の関係で、中期バイアスを調整
+    if current_price > ma50:
+        short_term_bias = "強気な上昇"
+        ma_analysis = "・価格は50MAを明確に上回っており、中期的な上昇トレンドの勢いが強いことを示しています。"
+    elif current_price < ma50 * 0.99: # 1%以上の開きがある場合
+        short_term_bias = "弱気な下降"
+        ma_analysis = "・価格は50MAを下回っており、中期的な下降トレンドへの転換リスクが高まっています。50MAが新たなレジスタンスとして機能しています。"
+    else:
+        short_term_bias = "レンジ"
+        ma_analysis = "・価格は50MA付近で膠着しており、トレンドの方向性について市場が迷っている状態です。"
+
+    analysis_details.append(ma_analysis)
+
     # 1h予測: データ件数に基づいた短期的なモメンタム
     if (data_count % 3) == 0:
         predictions["1h"] = outcomes["UP"]
-        short_term_bias = "上昇"
         analysis_details.append("・1h: 短期RSIは40台で推移しており、上値トライの余地があります。強い下降シグナルは出ていません。")
     elif (data_count % 3) == 1:
         predictions["1h"] = outcomes["DOWN"]
-        short_term_bias = "下降"
         analysis_details.append("・1h: 短期移動平均線が短期トレンドラインを下回り、短期的な売り圧力が強まっています。")
     else:
         predictions["1h"] = outcomes["SIDE"]
-        short_term_bias = "レンジ"
         analysis_details.append("・1h: 短期的な値動きのエネルギーが低下し、主要なサポート・レジスタンスラインの間で価格が膠着しています。")
         
     # 4h予測: データ件数の偶奇による中期的なトレンド
@@ -390,22 +429,22 @@ def update_report_data():
         f"--- *動向の詳細分析と根拠* ---\n"
         f"{analysis_text}\n\n"
         f"--- *総合戦略サマリー* ---\n"
-        f"💡 *短期（1h）バイアス*: *{short_term_bias}* 傾向\n"
-        f"🛡️ *推奨戦略*: {long_term_advice}がベースとなります。短期的な値動き（1h/4h）は、分析詳細で触れたモメンタム指標に大きく依存します。\n"
+        f"💡 *中期バイアス*: *{short_term_bias}* 傾向\n"
+        f"🛡️ *推奨戦略*: {long_term_advice}がベースとなります。中期的な転換点（50MA）とR1/S1を基準にした戦略が重要です。\n"
         f"_※ この予測は、現在のデータセットに基づく分析であり、投資助言ではありません。_"
     )
     
     # 5. 画像生成と画像通知の実行
     try:
         logging.info("チャート画像を生成中...")
-        chart_buffer = generate_chart_image(current_price, r1, s1)
+        chart_buffer = generate_chart_image(current_price, r1, s1, ma50)
         
         # 画像キャプションとしてレポートサマリーの一部を使用
         photo_caption = (
             f"📈 *BTCチャート分析 ({price_source})* 📉\n"
             f"📅 更新: `{last_updated_str}`\n"
             f"{price_analysis_text}\n\n"
-            f"総合予測: 💡 *短期バイアス*:{short_term_bias} / 🛡️ *推奨戦略*:{long_term_advice}\n"
+            f"総合予測: 💡 *中期バイアス*:{short_term_bias} / 🛡️ *推奨戦略*:{long_term_advice}\n"
             f"_詳細は別途送信されるテキストレポートをご確認ください。_"
         )
         
