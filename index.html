@@ -3,205 +3,215 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{ title }}</title>
-    <!-- Tailwind CSS CDNを読み込み -->
+    <title>BTC実践テクニカル分析 BOT ダッシュボード</title>
+    <!-- Tailwind CSS CDN -->
     <script src="https://cdn.tailwindcss.com"></script>
-    <script>
-        tailwind.config = {
-            theme: {
-                extend: {
-                    colors: {
-                        'primary': '#10b981', // Emerald green
-                        'secondary': '#374151', // Gray-700
-                    },
-                    fontFamily: {
-                        sans: ['Inter', 'sans-serif'],
-                    }
-                }
-            }
-        }
-    </script>
     <style>
-        @keyframes pulse-once {
-            0% {
-                box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
-            }
-            70% {
-                box-shadow: 0 0 0 10px rgba(16, 185, 129, 0);
-            }
-            100% {
-                box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
-            }
+        /* Google Fonts - Inter */
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f0f4f8; /* Light background */
         }
-        .pulsing-dot {
-            animation: pulse-once 1.5s ease-out infinite;
+        .card {
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08); /* Stronger shadow */
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .card:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 6px 15px rgba(0, 0, 0, 0.12);
+        }
+        .loading {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #3b82f6;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
         }
     </style>
 </head>
-<body class="bg-gray-50 min-h-screen p-4 md:p-8 font-sans">
-    <div class="max-w-4xl mx-auto">
-        
-        <!-- ヘッダー -->
-        <header class="mb-8">
-            <h1 class="text-4xl font-extrabold text-secondary tracking-tight border-b-4 border-primary pb-2 inline-block">
-                {{ title }}
+<body class="p-4 md:p-8">
+    <div class="max-w-5xl mx-auto">
+        <header class="text-center py-8 bg-white rounded-2xl mb-8 shadow-xl">
+            <h1 class="text-4xl font-extrabold text-gray-900">
+                <span class="text-yellow-500">₿</span> BTC 実践テクニカル分析 BOT
             </h1>
+            <p class="text-lg text-gray-500 mt-2">自動分析レポートとTelegram通知のリアルタイムステータス</p>
         </header>
 
-        <!-- ステータスセクション -->
-        <section class="mb-10 bg-white shadow-xl rounded-xl p-6 border-t-4 border-primary">
-            <h2 class="text-2xl font-semibold text-gray-800 mb-4 flex items-center">
-                <svg class="w-6 h-6 mr-2 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
-                システム稼働状況
-            </h2>
-            
-            <div class="grid grid-cols-1 md:grid-cols-3 gap-6 text-center">
+        <main id="dashboard-content" class="space-y-8">
+            <!-- データ処理中/エラーメッセージ -->
+            <div id="loading-state" class="text-center p-10 bg-white rounded-xl card hidden">
+                <div class="loading mx-auto mb-4"></div>
+                <p class="text-xl font-semibold text-gray-700">データを初回取得・分析中です...</p>
+                <p class="text-sm text-gray-500 mt-2">初回処理には最大1分程度かかることがあります。</p>
+            </div>
+
+            <!-- 主要指標カードコンテナ -->
+            <div id="metric-cards" class="grid grid-cols-1 md:grid-cols-4 gap-6">
+                <!-- 1. BOT ステータス -->
+                <div id="status-card" class="card p-6 bg-white rounded-xl border-t-4">
+                    <p class="text-sm font-semibold text-gray-500">BOT ステータス</p>
+                    <p class="text-3xl font-bold mt-1 text-gray-800" id="scheduler-status">...</p>
+                    <p class="text-xs text-gray-400 mt-3">更新周期: 6時間ごと</p>
+                </div>
                 
-                <!-- 最終更新日時カード -->
-                <div class="bg-gray-100 p-4 rounded-lg shadow-inner">
-                    <p class="text-sm font-medium text-gray-500 uppercase">最終レポート更新</p>
-                    <p id="last-updated" class="text-xl md:text-2xl font-bold text-gray-900 mt-1 break-words">
-                        {{ data['last_updated'] }}
-                    </p>
+                <!-- 2. 現在価格 -->
+                <div class="card p-6 bg-white rounded-xl border-t-4 border-blue-600">
+                    <p class="text-sm font-semibold text-gray-500">現在価格 (BTC-USD)</p>
+                    <p class="text-3xl font-extrabold mt-1 text-blue-700" id="current-price">...</p>
+                    <p class="text-xs text-gray-400 mt-3">最終更新: <span id="last-updated">...</span></p>
                 </div>
 
-                <!-- スケジューラーステータスカード -->
-                <div class="bg-gray-100 p-4 rounded-lg shadow-inner">
-                    <p class="text-sm font-medium text-gray-500 uppercase">スケジューラー状態</p>
-                    <div class="flex items-center justify-center mt-1">
-                        <span id="scheduler-status-dot" class="w-3 h-3 rounded-full bg-primary pulsing-dot mr-2"></span>
-                        <p id="scheduler-status" class="text-xl md:text-2xl font-bold text-gray-900">
-                            {{ data['scheduler_status'] }}
-                        </p>
-                    </div>
+                <!-- 3. 中期バイアス -->
+                <div class="card p-6 bg-white rounded-xl border-t-4 border-purple-600">
+                    <p class="text-sm font-semibold text-gray-500">中期バイアス</p>
+                    <p class="text-3xl font-bold mt-1 text-purple-700" id="bias">...</p>
+                    <p class="text-xs text-gray-400 mt-3">MA50基準の傾向</p>
                 </div>
+                
+                <!-- 4. データ件数 -->
+                <div class="card p-6 bg-white rounded-xl border-t-4 border-gray-400">
+                    <p class="text-sm font-semibold text-gray-500">分析データ件数</p>
+                    <p class="text-3xl font-bold mt-1 text-gray-700" id="data-count">...</p>
+                    <p class="text-xs text-gray-400 mt-3"><span id="data-range">...</span></p>
+                </div>
+            </div>
 
-                <!-- データ件数カード -->
-                <div class="bg-gray-100 p-4 rounded-lg shadow-inner">
-                    <p class="text-sm font-medium text-gray-500 uppercase">処理データ件数</p>
-                    <p id="data-count" class="text-xl md:text-2xl font-bold text-gray-900 mt-1">
-                        {{ data['data_count'] }} 件
-                    </p>
-                </div>
+            <!-- 戦略サマリー -->
+            <div class="card p-6 bg-white rounded-xl border-l-8 border-yellow-500">
+                <h2 class="text-2xl font-bold text-gray-800 mb-3 flex items-center">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-yellow-500 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 6v.008a.999.999 0 00-.775-.245L4.47 5.087A1 1 0 004 6v10.125m10-10.125L12 5.875M12 5.875v6" />
+                    </svg>
+                    推奨戦略サマリー
+                </h2>
+                <p class="text-lg text-gray-600 font-medium" id="strategy">...</p>
             </div>
             
-            <div class="mt-6 p-4 bg-primary/10 rounded-lg text-center">
-                <p class="text-sm font-medium text-gray-700">データ取得期間:</p>
-                <p id="data-range" class="text-lg font-mono text-primary break-words mt-1">{{ data['data_range'] }}</p>
+            <!-- 予測情報（もしあれば） -->
+            <div id="predictions-area" class="card p-6 bg-white rounded-xl hidden">
+                <h3 class="text-xl font-bold text-gray-800 mb-3">短期予測</h3>
+                <div id="prediction-list" class="grid grid-cols-2 gap-4 text-lg">
+                    <!-- Predictions will be inserted here -->
+                </div>
             </div>
-        </section>
 
-        <!-- レポート概要 -->
-        <section class="bg-white shadow-xl rounded-xl p-6">
-            <h2 class="text-2xl font-semibold text-gray-800 mb-4 flex items-center">
-                <svg class="w-6 h-6 mr-2 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
-                最新分析結果のサマリー
-            </h2>
-            <div class="space-y-4 text-gray-700">
-                <p>このセクションには、定期的に更新される機械学習モデルによる分析結果や、トレードの推奨事項が表示されます。アプリケーションのバックエンド（`app.py`）で実行されているタスクは、現在、データ取得をシミュレーションしています。</p>
-                <ul class="list-disc list-inside ml-4 space-y-2">
-                    <li>**ボラティリティ指標:** 現在の市場は中程度のボラティリティを示しています。</li>
-                    <li>**モデル推奨:** 短期的なレンジ取引（RSIに基づく）が推奨されます。</li>
-                    <li>**次回の予測実行:** スケジュールに従って1分以内に更新されます。</li>
-                </ul>
-                <p class="text-sm text-gray-500 mt-4 border-l-4 border-gray-300 pl-3">
-                    注意: このページに表示されるデータはダミーであり、実際の金融取引情報ではありません。
-                </p>
-            </div>
-        </section>
-
+        </main>
     </div>
 
+    <!-- JavaScript for dynamic updates -->
     <script>
-        // グローバル変数を設定 (HTMLテンプレートから初期値を引き継ぐ)
-        let globalData = {
-            last_updated: "{{ data['last_updated'] }}",
-            data_range: "{{ data['data_range'] }}",
-            data_count: "{{ data['data_count'] }}",
-            scheduler_status: "{{ data['scheduler_status'] }}"
-        };
+        // 価格をフォーマットする関数
+        function formatPrice(price) {
+            if (typeof price === 'number' && !isNaN(price) && price !== 0) {
+                return '$' + price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            }
+            return 'N/A';
+        }
 
-        const updateUI = (data) => {
-            const lastUpdatedEl = document.getElementById('last-updated');
-            const dataRangeEl = document.getElementById('data-range');
-            const dataCountEl = document.getElementById('data-count');
-            const schedulerStatusEl = document.getElementById('scheduler-status');
-            const statusDotEl = document.getElementById('scheduler-status-dot');
-
-            // 最終更新日時
-            if (data.last_updated !== globalData.last_updated) {
-                lastUpdatedEl.textContent = data.last_updated;
-                // 更新があった場合に視覚的なフィードバック（ドットのパルスアニメーションをリセット）
-                statusDotEl.classList.remove('pulsing-dot');
-                void statusDotEl.offsetWidth; // 強制的にリフロー
-                statusDotEl.classList.add('pulsing-dot');
+        // ダッシュボードを更新するメイン関数
+        function updateDashboard(data) {
+            const statusCard = document.getElementById('status-card');
+            
+            // データのロード状態を管理
+            const isLoading = data.scheduler_status === '初期化中' || data.strategy === 'データ処理中';
+            document.getElementById('loading-state').classList.toggle('hidden', !isLoading);
+            document.getElementById('metric-cards').classList.toggle('hidden', isLoading);
+            document.getElementById('strategy').parentElement.classList.toggle('hidden', isLoading);
+            
+            if (isLoading) {
+                // ロード中は詳細な更新をスキップ
+                return;
             }
 
-            // データ範囲と件数
-            dataRangeEl.textContent = data.data_range;
-            // data.data_countが数値であることを想定し、「 件」を追加
-            dataCountEl.textContent = data.data_count + ' 件';
+            // --- ステータスカードの更新 ---
+            document.getElementById('scheduler-status').textContent = data.scheduler_status;
+            statusCard.classList.remove('border-green-500', 'border-red-500', 'border-yellow-500');
             
-            // スケジューラーステータス
-            schedulerStatusEl.textContent = data.scheduler_status;
+            if (data.scheduler_status === '稼働中') {
+                statusCard.classList.add('border-green-500');
+            } else if (data.scheduler_status === 'エラー') {
+                statusCard.classList.add('border-red-500');
+            } else {
+                statusCard.classList.add('border-yellow-500');
+            }
             
-            // グローバルデータの更新
-            // 次回のシミュレーションのために data_count を数値として保持
-            globalData = {
-                ...data,
-                data_count: String(data.data_count) // 数値に「 件」が付かないように文字列として保持
-            };
-        };
+            // --- その他の指標の更新 ---
+            document.getElementById('current-price').textContent = formatPrice(data.current_price);
+            document.getElementById('last-updated').textContent = data.last_updated;
+            document.getElementById('bias').textContent = data.bias;
+            document.getElementById('strategy').textContent = data.strategy;
+            document.getElementById('data-count').textContent = data.data_count;
+            document.getElementById('data-range').textContent = data.data_range;
 
-        const fetchStatus = async () => {
+            // --- 予測リストの更新 (もしあれば) ---
+            const predictions = data.predictions; // app.pyに'predictions'フィールドが存在すると仮定
+            const predictionList = document.getElementById('prediction-list');
+            const predictionsArea = document.getElementById('predictions-area');
+            
+            if (predictions && Object.keys(predictions).length > 0) {
+                predictionList.innerHTML = '';
+                predictionsArea.classList.remove('hidden');
+                
+                for (const timeFrame in predictions) {
+                    const predictionText = predictions[timeFrame];
+                    const item = document.createElement('div');
+                    item.className = 'flex justify-between items-center p-3 bg-gray-50 rounded-lg';
+                    item.innerHTML = `
+                        <span class="font-semibold text-gray-600">${timeFrame}後</span>
+                        <span class="font-bold ${predictionText.includes('上昇') ? 'text-green-600' : predictionText.includes('下降') ? 'text-red-600' : 'text-gray-500'}">
+                            ${predictionText}
+                        </span>
+                    `;
+                    predictionList.appendChild(item);
+                }
+            } else {
+                 predictionsArea.classList.add('hidden');
+            }
+        }
+
+        // 10秒ごとにステータスAPIをポーリング
+        async function fetchStatus() {
             try {
-                // 修正点: 404エラーを回避するため、実際のfetchではなくダミーデータの取得に置き換え
-                
-                // ネットワーク遅延をシミュレーション (500ms)
-                await new Promise(resolve => setTimeout(resolve, 500)); 
-
-                // --- ダミーデータ生成ロジック ---
-                // 現在のデータ件数を取得（数値に変換。初期値が空の場合は1000から開始）
-                const currentCount = parseInt(globalData.data_count, 10) || 1000;
-                // 件数を更新（1から50件増やす）
-                const newCount = currentCount + Math.floor(Math.random() * 50) + 1;
-
-                const now = new Date();
-                const formattedTime = now.toLocaleString('ja-JP', {
-                    year: 'numeric', month: '2-digit', day: '2-digit',
-                    hour: '2-digit', minute: '2-digit', second: '2-digit'
-                });
-
-                const data = {
-                    last_updated: formattedTime,
-                    // data_rangeは更新しない
-                    data_range: globalData.data_range, 
-                    // data_countは数値として格納（updateUIで ' 件' が追加される）
-                    data_count: newCount, 
-                    scheduler_status: '稼働中'
-                };
-                // --- ダミーデータ生成ロジック 終了 ---
-
-                updateUI(data);
-
+                const response = await fetch('/status');
+                const data = await response.json();
+                updateDashboard(data);
             } catch (error) {
-                // ダミーデータ生成が失敗した場合はこちらで処理
-                console.error("ステータス取得エラー:", error);
-                
-                // エラー時もUIを更新し、稼働状況を反映
-                document.getElementById('scheduler-status').textContent = 'エラー発生';
-                document.getElementById('scheduler-status-dot').classList.remove('bg-primary', 'pulsing-dot');
-                document.getElementById('scheduler-status-dot').classList.add('bg-red-500');
+                console.error('ステータス取得エラー:', error);
+                // エラー発生時はローディング状態に戻す
+                updateDashboard({
+                    scheduler_status: 'エラー',
+                    strategy: 'データ取得エラー',
+                    current_price: 0,
+                    bias: 'N/A',
+                    last_updated: '接続失敗',
+                    data_count: 0
+                });
             }
-        };
+        }
 
-        window.onload = () => {
-            // 5秒ごとに最新のステータスを取得
-            setInterval(fetchStatus, 5000);
+        // ページロード時の初期化
+        document.addEventListener('DOMContentLoaded', () => {
+            // 初期データを表示 (Jinja2テンプレートがデータを埋め込むことを期待)
+            // Jinja2が初期データを埋め込む場所がないため、直接fetchを呼び出す。
+            // 初回表示は「初期化中」の状態にしておき、APIの結果を待つ。
+            document.getElementById('scheduler-status').textContent = "初期化中";
+            document.getElementById('loading-state').classList.remove('hidden');
+            document.getElementById('metric-cards').classList.add('hidden');
+
+            // 初回ポーリング
+            fetchStatus(); 
             
-            // 初回表示のタイミングでUIを更新（初期値が埋め込まれているため、初回は setInterval の開始を待つ）
-            // fetchStatus(); 
-        };
+            // 10秒ごとのポーリングを開始
+            setInterval(fetchStatus, 10000); 
+        });
+
     </script>
 </body>
 </html>
