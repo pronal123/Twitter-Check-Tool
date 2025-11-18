@@ -53,7 +53,7 @@
             </div>
 
             <!-- 主要指標カードコンテナ -->
-            <div id="metric-cards" class="grid grid-cols-1 md:grid-cols-4 gap-6">
+            <div id="metric-cards" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                 <!-- 1. BOT ステータス -->
                 <div id="status-card" class="card p-6 bg-white rounded-xl border-t-4">
                     <p class="text-sm font-semibold text-gray-500">BOT ステータス</p>
@@ -75,12 +75,14 @@
                     <p class="text-xs text-gray-400 mt-3">MA50基準の傾向</p>
                 </div>
                 
-                <!-- 4. データ件数 -->
-                <div class="card p-6 bg-white rounded-xl border-t-4 border-gray-400">
-                    <p class="text-sm font-semibold text-gray-500">分析データ件数</p>
-                    <p class="text-3xl font-bold mt-1 text-gray-700" id="data-count">...</p>
-                    <p class="text-xs text-gray-400 mt-3"><span id="data-range">...</span></p>
+                <!-- 4. 推奨損切りライン (新規追加) -->
+                <div id="stop-loss-card" class="card p-6 bg-white rounded-xl border-t-4 border-gray-400 opacity-50">
+                    <p class="text-sm font-semibold text-gray-500">推奨損切りライン 🛑</p>
+                    <p class="text-3xl font-bold mt-1 text-red-700" id="stop-loss-level">...</p>
+                    <p class="text-xs text-gray-400 mt-3">根拠: <span id="stop-loss-reason">...</span></p>
                 </div>
+
+                
             </div>
 
             <!-- 戦略サマリー -->
@@ -94,12 +96,20 @@
                 <p class="text-lg text-gray-600 font-medium" id="strategy">...</p>
             </div>
             
-            <!-- 予測情報（もしあれば） -->
+            <!-- 予測情報 -->
             <div id="predictions-area" class="card p-6 bg-white rounded-xl hidden">
                 <h3 class="text-xl font-bold text-gray-800 mb-3">短期予測</h3>
-                <div id="prediction-list" class="grid grid-cols-2 gap-4 text-lg">
+                <div id="prediction-list" class="grid grid-cols-2 md:grid-cols-4 gap-4 text-lg">
                     <!-- Predictions will be inserted here -->
                 </div>
+            </div>
+
+            <!-- データ件数 -->
+            <div class="card p-4 bg-white rounded-xl border-t-2 border-gray-200">
+                <p class="text-sm font-semibold text-gray-500">分析データ範囲</p>
+                <p class="text-xl font-bold mt-1 text-gray-700 inline-block" id="data-count">...</p>
+                <span class="text-sm text-gray-500">件 - </span>
+                <span class="text-sm text-gray-500" id="data-range">...</span>
             </div>
 
         </main>
@@ -109,7 +119,7 @@
     <script>
         // 価格をフォーマットする関数
         function formatPrice(price) {
-            if (typeof price === 'number' && !isNaN(price) && price !== 0) {
+            if (typeof price === 'number' && !isNaN(price) && price > 0) {
                 return '$' + price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
             }
             return 'N/A';
@@ -122,8 +132,10 @@
             // データのロード状態を管理
             const isLoading = data.scheduler_status === '初期化中' || data.strategy === 'データ処理中';
             document.getElementById('loading-state').classList.toggle('hidden', !isLoading);
+            // ロード中は主要な表示要素を隠す
             document.getElementById('metric-cards').classList.toggle('hidden', isLoading);
             document.getElementById('strategy').parentElement.classList.toggle('hidden', isLoading);
+            document.getElementById('predictions-area').classList.toggle('hidden', isLoading);
             
             if (isLoading) {
                 // ロード中は詳細な更新をスキップ
@@ -150,8 +162,30 @@
             document.getElementById('data-count').textContent = data.data_count;
             document.getElementById('data-range').textContent = data.data_range;
 
-            // --- 予測リストの更新 (もしあれば) ---
-            const predictions = data.predictions; // app.pyに'predictions'フィールドが存在すると仮定
+            // --- 新規追加: リスク管理の更新 ---
+            const stopLossLevel = data.stop_loss_level;
+            const stopLossReason = data.stop_loss_reason;
+            
+            const stopLossCard = document.getElementById('stop-loss-card');
+            
+            // カードの初期クラスをリセット
+            stopLossCard.classList.remove('opacity-50', 'border-gray-400', 'border-red-500', 'border-green-500');
+            
+            if (stopLossLevel > 0) {
+                document.getElementById('stop-loss-level').textContent = formatPrice(stopLossLevel);
+                document.getElementById('stop-loss-reason').textContent = stopLossReason;
+                // 損切りラインがある場合は赤色の境界線と不透明度を上げる
+                stopLossCard.classList.add('border-red-500');
+            } else {
+                document.getElementById('stop-loss-level').textContent = 'N/A';
+                document.getElementById('stop-loss-reason').textContent = 'バイアスなし';
+                // 損切りラインがない場合はグレーの境界線と薄い不透明度
+                stopLossCard.classList.add('opacity-50', 'border-gray-400');
+            }
+            
+
+            // --- 予測リストの更新 ---
+            const predictions = data.predictions; 
             const predictionList = document.getElementById('prediction-list');
             const predictionsArea = document.getElementById('predictions-area');
             
@@ -163,9 +197,17 @@
                     const predictionText = predictions[timeFrame];
                     const item = document.createElement('div');
                     item.className = 'flex justify-between items-center p-3 bg-gray-50 rounded-lg';
+                    
+                    let textColor = 'text-gray-500';
+                    if (predictionText.includes('上昇') || predictionText.includes('強気')) {
+                        textColor = 'text-green-600';
+                    } else if (predictionText.includes('下降') || predictionText.includes('弱気')) {
+                        textColor = 'text-red-600';
+                    }
+
                     item.innerHTML = `
                         <span class="font-semibold text-gray-600">${timeFrame}後</span>
-                        <span class="font-bold ${predictionText.includes('上昇') ? 'text-green-600' : predictionText.includes('下降') ? 'text-red-600' : 'text-gray-500'}">
+                        <span class="font-bold ${textColor}">
                             ${predictionText}
                         </span>
                     `;
@@ -191,20 +233,21 @@
                     current_price: 0,
                     bias: 'N/A',
                     last_updated: '接続失敗',
-                    data_count: 0
+                    data_count: 0,
+                    stop_loss_level: 0.0,
+                    stop_loss_reason: '接続エラー'
                 });
             }
         }
 
         // ページロード時の初期化
         document.addEventListener('DOMContentLoaded', () => {
-            // 初期データを表示 (Jinja2テンプレートがデータを埋め込むことを期待)
-            // Jinja2が初期データを埋め込む場所がないため、直接fetchを呼び出す。
-            // 初回表示は「初期化中」の状態にしておき、APIの結果を待つ。
+            // 初期表示はローディング状態
             document.getElementById('scheduler-status').textContent = "初期化中";
             document.getElementById('loading-state').classList.remove('hidden');
             document.getElementById('metric-cards').classList.add('hidden');
-
+            document.getElementById('strategy').parentElement.classList.add('hidden');
+            
             // 初回ポーリング
             fetchStatus(); 
             
