@@ -128,6 +128,9 @@ def send_telegram_photo(photo_buffer: io.BytesIO, caption: str):
 def fetch_btc_ohlcv_data():
     """
     yfinanceからBTC-USDの日足データを取得し、テクニカル分析のためにカラムを整形します。
+    
+    【重要修正】
+    MultiIndexが返された場合、get_level_values(0)を使用してOHLCV名を確実に取得します。
     """
     ticker = "BTC-USD"
     period = "60d" 
@@ -135,23 +138,29 @@ def fetch_btc_ohlcv_data():
     
     try:
         logging.info(f"yfinanceから{ticker}の過去データ（{period}）を取得中...")
+        # FutureWarningの抑制はここでは行わない
         df = yf.download(ticker, period=period, interval=interval, progress=False)
         
         if df.empty:
             raise ValueError("取得したデータが空です。")
             
-        # === MultiIndexフラット化の修正 (より堅牢な方法) ===
+        # === MultiIndexフラット化の修正 (より堅牢なget_level_valuesを使用) ===
         if isinstance(df.columns, pd.MultiIndex):
             logging.warning("⚠️ yfinanceデータがMultiIndexを返しました。カラム名をフラット化し、再設定します。")
-            # 複合インデックスの第2レベル (Open, High, Low, Closeなど) を抽出
-            # MultiIndexはタプルのリストとして扱える
-            # 例: [('BTC-USD', 'Open'), ('BTC-USD', 'High')] -> ['Open', 'High']
-            new_columns = [col[1] for col in df.columns.values]
-            df.columns = new_columns
-        # ==================================================
+            
+            # 通常、単一ティッカーのMultiIndexの場合、レベル0にOHLCV名（Open, Closeなど）がある
+            df.columns = df.columns.get_level_values(0)
+        # ==================================================================
             
         # インデックス名を'Date'に設定
         df.index.name = 'Date'
+        
+        # 'Close'列が存在するか確認してから処理
+        if 'Close' not in df.columns:
+            # ログで実際のカラム名を出力してデバッグを容易にする
+            logging.error(f"データ取得後、'Close'カラムが見つかりません。利用可能なカラム: {df.columns.tolist()}")
+            raise KeyError("'Close'")
+
         # 終値 (Close) を小数点以下2桁に丸める
         df['Close'] = df['Close'].round(2)
         
@@ -159,6 +168,7 @@ def fetch_btc_ohlcv_data():
         return df
         
     except Exception as e:
+        # KeyError 'Close' もここでキャッチされる
         logging.error(f"❌ yfinanceからデータ取得中にエラーが発生しました: {e}")
         return pd.DataFrame()
 
@@ -206,7 +216,7 @@ def generate_strategy(df: pd.DataFrame) -> dict:
     
     if len(df_clean) < 2 or len(df) < 2:
         # データ不足時の緊急対応
-        price = df['Close'].iloc[-1] if not df.empty else 0
+        price = df['Close'].iloc[-1] if not df.empty and 'Close' in df.columns else 0
         return {
             'price': price,
             'P': price, 'R1': price * 1.01, 'S1': price * 0.99, 'MA50': price, 'RSI': 50,
@@ -271,6 +281,7 @@ def generate_strategy(df: pd.DataFrame) -> dict:
         strategy = f"トレンドフォローの戻り売り戦略。R1 ({R1:,.2f}) やP ({P:,.2f}) への短期的な上昇時が売り場。"
     elif bias == "レンジ" or bias == "中立":
         # ボリンジャーバンドの幅 (BBB) が狭い場合（圧縮）はブレイクアウト待ち
+        # 'BBB_20_2.0'の存在を確認
         if 'BBB_20_2.0' in latest and latest['BBB_20_2.0'] < 10: # BBB < 10%はボラティリティ低下を示す
              strategy = f"ボラティリティ圧縮中。R1 ({R1:,.2f}) / S1 ({S1:,.2f}) のブレイクアウト待ち。"
         else:
@@ -375,8 +386,18 @@ def update_report_data():
         return
 
     # 2. テクニカル分析
-    df_analyzed = analyze_data(df)
-    
+    try:
+        df_analyzed = analyze_data(df)
+    except Exception as e:
+        # analyze_data内でエラーが発生した場合の緊急処理
+        logging.error(f"致命的エラー: テクニカル分析中にエラーが発生しました: {e}")
+        global_data['scheduler_status'] = 'エラー'
+        global_data['strategy'] = 'テクニカル分析エラー'
+        global_data['bias'] = 'N/A'
+        error_msg = f"❌ *BTC分析レポート生成エラー*\n\nテクニカル分析中にエラーが発生しました。\n詳細: {str(e)}\n最終更新: {now.strftime('%Y-%m-%d %H:%M:%S')}"
+        Thread(target=send_telegram_message, args=(error_msg,)).start()
+        return
+
     # 3. 戦略と予測の生成
     analysis_result = generate_strategy(df_analyzed)
 
