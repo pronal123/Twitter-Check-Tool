@@ -16,7 +16,7 @@ from matplotlib.dates import DateFormatter, DayLocator
 # 実践的な分析のための新しいライブラリ
 import yfinance as yf
 import pandas_ta as ta
-import numpy as np # 新たに追加
+import numpy as np 
 
 # -----------------
 # Matplotlib 日本語フォント設定
@@ -190,7 +190,7 @@ def analyze_data(df: pd.DataFrame) -> pd.DataFrame:
     logging.info("✅ テクニカル指標の計算完了。")
     return df
 
-# === [改良点] ピボットポイントの計算関数を強化 ===
+# === ピボットポイントの計算関数を強化 ===
 def calculate_pivot_levels(df: pd.DataFrame, pivot_type: str = 'Classic') -> tuple[float, float, float, float, float]:
     """
     前日のOHLCデータから指定されたタイプのピボットポイントを算出します。
@@ -225,7 +225,7 @@ def calculate_pivot_levels(df: pd.DataFrame, pivot_type: str = 'Classic') -> tup
     return tuple(round(level, 2) for level in [P, R1, S1, R2, S2])
 # ===============================================
 
-# === [新規追加] バックテスト機能のコアロジック ===
+# === バックテスト機能のコアロジック ===
 def backtest_strategy(df: pd.DataFrame, initial_capital: float = BACKTEST_CAPITAL) -> dict:
     """
     データフレームに基づき、現在の戦略ロジックをバックテストします。
@@ -287,7 +287,9 @@ def backtest_strategy(df: pd.DataFrame, initial_capital: float = BACKTEST_CAPITA
                 entry_price = close
         
         # 各足での資本状況を記録
-        capital_history.append(capital + (close - entry_price) * position if position != 0 else capital)
+        # 注: ポジションがある場合は未決済の含み益/含み損を考慮してEquityを計算
+        current_equity = capital + (close - entry_price) * position if position != 0 else capital
+        capital_history.append(current_equity)
 
 
     # --- パフォーマンス指標の計算 ---
@@ -351,14 +353,14 @@ def generate_strategy(df_long: pd.DataFrame, df_short: pd.DataFrame) -> dict:
         }
 
     latest = df_long_clean.iloc[-1]
-    prev_latest = df_long_clean.iloc[-2]
+    # prev_latest = df_long_clean.iloc[-2] # 未使用のためコメントアウト
 
     # 日足の指標値
     price = latest['Close']
     ma50 = latest['SMA_50']
     ma200 = latest['SMA_200']
     rsi = latest['RSI_14']
-    macd_h = latest['MACDh_12_26_9']
+    # macd_h = latest['MACDh_12_26_9'] # 未使用のためコメントアウト
 
     # ピボットポイントの計算 (日足データでクラシックピボットを使用)
     P_long, R1_long, S1_long, _, _ = calculate_pivot_levels(df_long, 'Classic')
@@ -367,7 +369,7 @@ def generate_strategy(df_long: pd.DataFrame, df_short: pd.DataFrame) -> dict:
     latest_short = df_short_clean.iloc[-1]
     P_short, R1_short, S1_short, _, _ = calculate_pivot_levels(df_short, 'Fibonacci')
     short_ma50 = latest_short['SMA_50']
-    short_rsi = latest_short['RSI_14']
+    # short_rsi = latest_short['RSI_14'] # 未使用のためコメントアウト
 
     # 総合バイアスと戦略の決定
     bias = "中立"
@@ -460,8 +462,10 @@ def generate_strategy(df_long: pd.DataFrame, df_short: pd.DataFrame) -> dict:
             strategy = f"トレンドフォローの戻り売り戦略。日足P ({P_long:,.2f}) への短期的な上昇時が主な売り場。"
     elif bias == "レンジ/中立":
         # ボリンジャーバンドの幅 (BBB) が狭い場合（圧縮）はブレイクアウト待ち
-        # BBB_20_2.0が存在しない可能性を考慮
-        bbb = latest['BBB_20_2.0'] if 'BBB_20_2.0' in latest else 100 
+        # 修正: pandas_taが生成する正しいカラム名を使用
+        BBB_COL = 'BBB_20_2.0_2.0' 
+
+        bbb = latest[BBB_COL] if BBB_COL in latest else 100 
 
         if bbb < 10: # BBB < 10%はボラティリティ低下を示す
              strategy = f"ボラティリティ圧縮中。日足R1 ({R1_long:,.2f}) / S1 ({S1_long:,.2f}) の*ブレイクアウト待ち*。"
@@ -494,7 +498,11 @@ def generate_chart_image(df: pd.DataFrame, analysis_result: dict) -> io.BytesIO:
     """
     終値と主要なテクニカル指標を含むチャート画像を生成します。
     """
-    required_cols = ['Close', 'High', 'Low', 'SMA_50', 'SMA_200', 'BBU_20_2.0', 'BBL_20_2.0']
+    # 修正: pandas_taの命名規則に合わせてカラム名を変更
+    BBU_COL = 'BBU_20_2.0_2.0'
+    BBL_COL = 'BBL_20_2.0_2.0'
+    
+    required_cols = ['Close', 'High', 'Low', 'SMA_50', 'SMA_200', BBU_COL, BBL_COL]
     
     # NaN行を削除してから描画に渡す（描画エラーを防ぐため）
     df_plot = df.dropna(subset=['Close', 'SMA_50']).copy() 
@@ -502,7 +510,7 @@ def generate_chart_image(df: pd.DataFrame, analysis_result: dict) -> io.BytesIO:
     if not all(col in df_plot.columns for col in required_cols):
         # 描画に必要な一部のカラムがない場合は描画をスキップ
         logging.error(f"チャート描画に必要なカラムの一部が不足しています。利用可能なカラム: {df_plot.columns.tolist()}")
-        # 空のバッファを返す
+        # 空のバッファを返す (Telegramエラーの原因を防ぐ)
         return io.BytesIO()
 
 
@@ -518,8 +526,8 @@ def generate_chart_image(df: pd.DataFrame, analysis_result: dict) -> io.BytesIO:
     ax.plot(df_plot.index, df_plot['SMA_200'], label='SMA 200 (長期)', color='#ef4444', linestyle='--', linewidth=1.5, alpha=0.9)
 
     # ボリンジャーバンド (Upper/Lower Band)
-    ax.plot(df_plot.index, df_plot['BBU_20_2.0'], label='BB Upper (+2σ)', color='#ef4444', linestyle=':', linewidth=1)
-    ax.plot(df_plot.index, df_plot['BBL_20_2.0'], label='BB Lower (-2σ)', color='#3b82f6', linestyle=':', linewidth=1)
+    ax.plot(df_plot.index, df_plot[BBU_COL], label='BB Upper (+2σ)', color='#ef4444', linestyle=':', linewidth=1)
+    ax.plot(df_plot.index, df_plot[BBL_COL], label='BB Lower (-2σ)', color='#3b82f6', linestyle=':', linewidth=1)
 
     # --- 3. 最新の主要レベルの描画 ---
     price = analysis_result['price']
@@ -699,11 +707,18 @@ def update_report_data():
             f"_詳細は別途送信されるテキストレポートをご確認ください。_"
         )
 
-        Thread(target=send_telegram_photo, args=(chart_buffer, photo_caption)).start()
+        # チャートバッファが空でないことを確認してから送信（Telegramエラー対策）
+        if chart_buffer.getbuffer().nbytes > 0:
+            Thread(target=send_telegram_photo, args=(chart_buffer, photo_caption)).start()
+        else:
+             logging.error("❌ チャート画像のバッファが空です。画像送信をスキップしました。")
+             error_caption = f"⚠️ *チャート生成失敗*\n\nデータは正常に処理されましたが、チャート画像生成中にエラーが発生しました。\n_詳細はログをご確認ください。_\n\n最終更新: {last_updated_str}"
+             Thread(target=send_telegram_message, args=(error_caption,)).start()
+
 
     except Exception as e:
         logging.error(f"❌ チャート画像の生成または送信に失敗しました: {e}", exc_info=True)
-        error_caption = f"⚠️ *チャート生成失敗*\n\nデータは正常に処理されましたが、チャート画像生成中にエラーが発生しました。\nエラー詳細: {str(e)[:100]}...\n\n最終更新: {last_updated_str}"
+        error_caption = f"⚠️ *チャート生成失敗*\n\nデータは正常に処理されましたが、チャート画像生成中に予期せぬエラーが発生しました。\nエラー詳細: {str(e)[:100]}...\n\n最終更新: {last_updated_str}"
         Thread(target=send_telegram_message, args=(error_caption,)).start()
 
 
