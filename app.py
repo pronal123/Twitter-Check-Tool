@@ -361,9 +361,9 @@ if not scheduler.running:
     # アプリケーションにスケジューラーを登録
     scheduler.init_app(app)
     
-    # 1分間隔でジョブを追加
+    # 1時間間隔でジョブを追加
     scheduler.add_job(id='report_update_job', func=update_report_data, 
-                      trigger='interval', minutes=1, replace_existing=True)
+                      trigger='interval', hours=1, replace_existing=True) # <-- ここを hours=1 に変更
     
     # スケジューラーを開始
     scheduler.start()
