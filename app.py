@@ -649,7 +649,6 @@ def update_report_data():
     report_message = (
         f"👑 *BTC実践分析レポート (テクニカルBOT)* 👑\n\n"
         f"📅 *最終データ更新*: `{last_updated_str}`\n"
-        # 構文エラーを修正しました (余分な '}' を削除)
         f"📊 *処理データ件数*: *{len(df_long)}* 件 ({LONG_INTERVAL}足) + *{len(df_short)}* 件 ({SHORT_INTERVAL}足)\n\n" 
         
         # --- 市場優勢度の強調 ---
@@ -657,16 +656,16 @@ def update_report_data():
         f"🚨 *総合優勢度*: *{dominance}*\n\n"
         
         f"--- *主要価格帯と指標 (USD)* ---\n"
-        # 改行を \n\n に変更し、リストの各項目が確実に改行されるようにします。
-        f"{'\\n\\n'.join(price_analysis)}\n\n"
+        # 修正: '\n' (実際の改行コード) をジョイナーとして使用
+        f"{'\n'.join(price_analysis)}\n\n" 
         
         f"--- *動向の詳細分析と根拠* ---\n"
-        # 改行を \n\n に変更し、リストの各項目が確実に改行されるようにします。
-        f"{'\\n\\n'.join(details)}\n\n"
+        # 修正: '\n' (実際の改行コード) をジョイナーとして使用
+        f"{'\n'.join(details)}\n\n"
         
         f"--- *短期動向と予測* ---\n"
-        # 改行を \n\n に変更し、リストの各項目が確実に改行されるようにします。
-        f"{'\\n\\n'.join(prediction_lines)}\n\n"
+        # 修正: '\n' (実際の改行コード) をジョイナーとして使用
+        f"{'\n'.join(prediction_lines)}\n\n"
         
         f"--- *総合戦略サマリー* ---\n"
         f"🛡️ *推奨戦略*: *{strategy}*\n\n"
@@ -699,9 +698,9 @@ def update_report_data():
         ]
 
     report_message += (
-        f"\n{chr(8212) * 20}\n" # 区切り線
-        # 改行を \n\n に変更し、リストの各項目が確実に改行されるようにします。
-        f"{'\\n\\n'.join(backtest_lines)}\n\n"
+        f"{chr(8212) * 20}\n" # 区切り線
+        # 修正: '\n' (実際の改行コード) をジョイナーとして使用
+        f"{'\n'.join(backtest_lines)}\n\n" 
         f"_※ この分析は、実戦的なマルチタイムフレーム分析に基づきますが、投資助言ではありません。_"
     )
 
