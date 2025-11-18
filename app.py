@@ -127,11 +127,7 @@ def send_telegram_photo(photo_buffer: io.BytesIO, caption: str):
 
 def fetch_btc_ohlcv_data():
     """
-    yfinanceからBTC-USDの日足データを取得します。（過去60日間）
-    
-    【重要修正】
-    yfinanceが返す可能性のあるMultiIndex（複合インデックス）を処理し、
-    pandas_taが期待する単一のカラムインデックスにフラット化します。
+    yfinanceからBTC-USDの日足データを取得し、テクニカル分析のためにカラムを整形します。
     """
     ticker = "BTC-USD"
     period = "60d" 
@@ -144,13 +140,15 @@ def fetch_btc_ohlcv_data():
         if df.empty:
             raise ValueError("取得したデータが空です。")
             
-        # === MultiIndexフラット化の修正 ===
+        # === MultiIndexフラット化の修正 (より堅牢な方法) ===
         if isinstance(df.columns, pd.MultiIndex):
-            logging.warning("⚠️ yfinanceデータがMultiIndexを返しました。カラム名をフラット化しています。")
-            # 通常、単一ティッカーの場合、レベル0がティッカー名、レベル1がカラム名（Open, Highなど）
-            # レベル0を削除して、カラムをフラット化します。
-            df.columns = df.columns.droplevel(0)
-        # ==================================
+            logging.warning("⚠️ yfinanceデータがMultiIndexを返しました。カラム名をフラット化し、再設定します。")
+            # 複合インデックスの第2レベル (Open, High, Low, Closeなど) を抽出
+            # MultiIndexはタプルのリストとして扱える
+            # 例: [('BTC-USD', 'Open'), ('BTC-USD', 'High')] -> ['Open', 'High']
+            new_columns = [col[1] for col in df.columns.values]
+            df.columns = new_columns
+        # ==================================================
             
         # インデックス名を'Date'に設定
         df.index.name = 'Date'
