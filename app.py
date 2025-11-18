@@ -208,6 +208,7 @@ def analyze_data(df: pd.DataFrame) -> pd.DataFrame:
     df.ta.macd(fast=12, slow=26, signal=9, append=True)
     
     # --- ボリンジャーバンド (BBANDS) ---
+    # Bollinger Bandsは20日間のデータが必要です。最初の19日分はNaNになります。
     df.ta.bbands(length=20, append=True) 
     
     logging.info("✅ テクニカル指標の計算完了。")
@@ -230,6 +231,7 @@ def generate_strategy(df: pd.DataFrame) -> dict:
     最新のテクニカル指標に基づいて、総合的な戦略と予測を決定します。
     """
     # MA50やBBandsなど、計算に過去データが必要な指標を持つ行のみを抽出
+    # 指標がNaNになる最初の期間をスキップするため、dropna()を使用
     df_clean = df.dropna()
     
     if len(df_clean) < 2 or len(df) < 2:
@@ -254,6 +256,7 @@ def generate_strategy(df: pd.DataFrame) -> dict:
     macd_h = latest['MACDh_12_26_9'] # MACDヒストグラム
     
     # ピボットポイントの計算（前日のデータを使用）
+    # df.iloc[-2] は、最新日（-1）の前の日（-2）のOHLC値を使用
     H_prev, L_prev, C_prev = df.iloc[-2]['High'], df.iloc[-2]['Low'], df.iloc[-2]['Close'] 
     P, R1, S1 = calculate_pivot_levels_from_data(H_prev, L_prev, C_prev) 
     
@@ -328,22 +331,30 @@ def generate_chart_image(df: pd.DataFrame, analysis_result: dict) -> io.BytesIO:
     """
     終値と主要なテクニカル指標を含むチャート画像を生成します。
     """
-    # 必要な指標列がNaNでないデータのみを使用
-    df_clean = df.dropna(subset=['SMA_50', 'BBU_20_2.0', 'BBL_20_2.0'])
     
+    # 【修正: ガード句の追加】
+    # チャート描画に必要な最低限のカラムが存在しない場合は、エラーを発生させずにNoneを返します。
+    # update_report_dataのtry/exceptでこれを処理します。
+    required_cols = ['Close', 'High', 'Low']
+    if not all(col in df.columns for col in required_cols):
+        raise ValueError(f"チャート描画に必要なカラム ({required_cols}) が不足しています。利用可能なカラム: {df.columns.tolist()}")
+
     fig, ax = plt.subplots(figsize=(10, 6), dpi=100) 
     
     # --- 1. 価格ライン ---
     ax.plot(df.index, df['Close'], label='BTC 終値 (USD)', color='#059669', linewidth=2)
     
     # --- 2. テクニカル指標ラインの描画 ---
-    if not df_clean.empty:
-        # 50日移動平均線 (MA50)
-        ax.plot(df_clean.index, df_clean['SMA_50'], label='SMA 50', color='#fbbf24', linestyle='-', linewidth=1.5, alpha=0.7)
+    
+    # 50日移動平均線 (MA50) 
+    if 'SMA_50' in df.columns:
+        ax.plot(df.index, df['SMA_50'], label='SMA 50', color='#fbbf24', linestyle='-', linewidth=1.5, alpha=0.7)
         
-        # ボリンジャーバンド (Upper/Lower Band)
-        ax.plot(df_clean.index, df_clean['BBU_20_2.0'], label='BB Upper (+2σ)', color='#ef4444', linestyle=':', linewidth=1)
-        ax.plot(df_clean.index, df_clean['BBL_20_2.0'], label='BB Lower (-2σ)', color='#3b82f6', linestyle=':', linewidth=1)
+    # ボリンジャーバンド (Upper/Lower Band) 
+    # カラムが存在することを改めて確認
+    if 'BBU_20_2.0' in df.columns and 'BBL_20_2.0' in df.columns:
+        ax.plot(df.index, df['BBU_20_2.0'], label='BB Upper (+2σ)', color='#ef4444', linestyle=':', linewidth=1)
+        ax.plot(df.index, df['BBL_20_2.0'], label='BB Lower (-2σ)', color='#3b82f6', linestyle=':', linewidth=1)
     
     # --- 3. 最新の主要レベルの描画 ---
     price = analysis_result['price']
@@ -364,7 +375,12 @@ def generate_chart_image(df: pd.DataFrame, analysis_result: dict) -> io.BytesIO:
     
     formatter = DateFormatter("%m/%d")
     ax.xaxis.set_major_formatter(formatter)
-    ax.xaxis.set_major_locator(DayLocator()) 
+    
+    # データを間引いて表示するためにDayLocatorを設定
+    if len(df.index) > 15:
+        ax.xaxis.set_major_locator(DayLocator(interval=math.ceil(len(df.index) / 10)))
+    else:
+        ax.xaxis.set_major_locator(DayLocator()) 
     
     plt.xticks(rotation=45, ha='right')
     plt.grid(True, linestyle=':', alpha=0.6)
@@ -373,6 +389,8 @@ def generate_chart_image(df: pd.DataFrame, analysis_result: dict) -> io.BytesIO:
 
     # 5. 画像をメモリ上のバイトストリームとして保存
     buf = io.BytesIO()
+    # bufに保存する前に、念のためplt.figure(fig.number)で現在の図をアクティブにしておく
+    plt.figure(fig.number) 
     plt.savefig(buf, format='png')
     buf.seek(0)
     plt.close(fig) 
@@ -491,8 +509,15 @@ def update_report_data():
         Thread(target=send_telegram_photo, args=(chart_buffer, photo_caption)).start()
         
     except Exception as e:
-        logging.error(f"❌ チャート画像の生成または送信に失敗しました: {e}")
+        # チャート生成に失敗した場合、テキストメッセージのみを送信する。
+        # エラーログをより詳細に出力
+        logging.error(f"❌ チャート画像の生成または送信に失敗しました: {e}", exc_info=True)
+        # 画像がない旨を伝えるメッセージを代わりに送信
+        error_caption = f"⚠️ *チャート生成失敗*\n\nデータは正常に処理されましたが、チャート画像生成中にエラーが発生しました。\nエラー詳細: {str(e)[:100]}...\n\n最終更新: {last_updated_str}"
+        Thread(target=send_telegram_message, args=(error_caption,)).start()
 
+
+    # テキストメッセージは必ず最後に送信
     Thread(target=send_telegram_message, args=(report_message,)).start()
     
     logging.info("レポート更新タスク完了。通知キューに追加されました。")
