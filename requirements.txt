@@ -8,3 +8,4 @@ Flask
 Flask-APScheduler
 python-dotenv
 gunicorn  # <-- 💥 これを追加
+python-telegram-bot
