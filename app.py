@@ -28,9 +28,13 @@ from flask_apscheduler import APScheduler
 # Telegram Bot設定
 # -----------------
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', 'YOUR_BOT_TOKEN_HERE') 
-TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '-1234567890') 
-TELEGRAM_API_URL_MESSAGE = f'https://api.coingecko.com/api/v3/simple/price?key={TELEGRAM_BOT_TOKEN}/sendMessage'
-TELEGRAM_API_URL_PHOTO = f'https://api.coingecko.com/api/v3/simple/price?key={TELEGRAM_BOT_TOKEN}/sendPhoto'
+# 注: ログから取得されたIDを一時的にデフォルトに設定していますが、必ずご自身のChat IDに置き換えてください。
+TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '5890119671') 
+
+# 修正: 正しいTelegram APIのエンドポイントを設定
+TELEGRAM_API_BASE_URL = f'https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}'
+TELEGRAM_API_URL_MESSAGE = f'{TELEGRAM_API_BASE_URL}/sendMessage'
+TELEGRAM_API_URL_PHOTO = f'{TELEGRAM_API_BASE_URL}/sendPhoto'
 
 
 # -----------------
@@ -56,58 +60,60 @@ global_data = {
 data_item_count = 0
 
 # -----------------
-# Telegram 通知ヘルパー関数 (NameErrorを解決するため追加)
+# Telegram 通知ヘルパー関数 (API呼び出しを有効化)
 # -----------------
 def send_telegram_message(message):
     """Telegramにテキストメッセージを送信します。"""
+    if TELEGRAM_BOT_TOKEN == 'YOUR_BOT_TOKEN_HERE' or not TELEGRAM_CHAT_ID:
+        logging.warning("⚠️ Telegram BOT TOKENまたはCHAT IDが設定されていません。通知をスキップします。")
+        return
+
     try:
-        # Note: 実際にはTELEGRAM_API_URL_MESSAGEを修正する必要がありますが、
-        # 実行環境の制約を考慮し、ここではログに記録するだけに留めます。
+        logging.info(f"Telegramにテキストメッセージを送信中... Chat ID: {TELEGRAM_CHAT_ID}")
         
-        # 実際にはここでrequests.post(...)を実行しますが、ここではシミュレーションとしてログ出力のみ行います。
-        logging.info("--- [Telegram Message Simulation] ---")
-        logging.info(f"Target Chat ID: {TELEGRAM_CHAT_ID}")
-        logging.info(f"Message: {message.replace('*', '').replace('`', '')}")
-        logging.info("-------------------------------------")
-        # 以下のAPI呼び出しは、環境で動作しない可能性があるためコメントアウトします。
-        # response = requests.post(
-        #     TELEGRAM_API_URL_MESSAGE,
-        #     json={'chat_id': TELEGRAM_CHAT_ID, 'text': message, 'parse_mode': 'Markdown'},
-        #     timeout=15
-        # )
-        # response.raise_for_status()
-        # logging.info("Telegramテキストメッセージの送信成功。")
+        response = requests.post(
+            TELEGRAM_API_URL_MESSAGE,
+            json={'chat_id': TELEGRAM_CHAT_ID, 'text': message, 'parse_mode': 'Markdown'},
+            timeout=15
+        )
+        response.raise_for_status()
+        logging.info("✅ Telegramテキストメッセージの送信成功。")
+        
+    except requests.exceptions.HTTPError as http_err:
+        logging.error(f"❌ Telegram HTTPエラーが発生しました: {http_err} - 応答: {response.text}")
+    except requests.exceptions.RequestException as req_err:
+        logging.error(f"❌ Telegram API接続エラーが発生しました: {req_err}")
     except Exception as e:
-        logging.error(f"Telegramテキストメッセージの送信に失敗しました: {e}")
+        logging.error(f"❌ Telegramテキストメッセージの送信中に予期せぬエラーが発生しました: {e}")
 
 def send_telegram_photo(photo_buffer: io.BytesIO, caption: str):
     """Telegramにチャート画像を送信します。"""
+    if TELEGRAM_BOT_TOKEN == 'YOUR_BOT_TOKEN_HERE' or not TELEGRAM_CHAT_ID:
+        logging.warning("⚠️ Telegram BOT TOKENまたはCHAT IDが設定されていません。画像通知をスキップします。")
+        return
+
     try:
-        # Note: 実際にはTELEGRAM_API_URL_PHOTOを修正する必要がありますが、
-        # 実行環境の制約を考慮し、ここではログに記録するだけに留めます。
+        logging.info(f"Telegramにチャート画像を送信中... Chat ID: {TELEGRAM_CHAT_ID}")
+
+        response = requests.post(
+            TELEGRAM_API_URL_PHOTO,
+            data={'chat_id': TELEGRAM_CHAT_ID, 'caption': caption, 'parse_mode': 'Markdown'},
+            files={'photo': ('chart.png', photo_buffer, 'image/png')},
+            timeout=30
+        )
+        response.raise_for_status()
+        logging.info("✅ Telegramチャート画像の送信成功。")
         
-        # 実際にはここでrequests.post(...)を実行しますが、ここではシミュレーションとしてログ出力のみ行います。
-        logging.info("--- [Telegram Photo Simulation] ---")
-        logging.info(f"Target Chat ID: {TELEGRAM_CHAT_ID}")
-        logging.info(f"Caption: {caption.replace('*', '').replace('`', '')}")
-        logging.info(f"Photo Size: {len(photo_buffer.getvalue()) / 1024:.2f} KB")
-        logging.info("-------------------------------------")
-        
-        # 以下のAPI呼び出しは、環境で動作しない可能性があるためコメントアウトします。
-        # response = requests.post(
-        #     TELEGRAM_API_URL_PHOTO,
-        #     data={'chat_id': TELEGRAM_CHAT_ID, 'caption': caption, 'parse_mode': 'Markdown'},
-        #     files={'photo': ('chart.png', photo_buffer, 'image/png')},
-        #     timeout=30
-        # )
-        # response.raise_for_status()
-        # logging.info("Telegramチャート画像の送信成功。")
+    except requests.exceptions.HTTPError as http_err:
+        logging.error(f"❌ Telegram Photo HTTPエラーが発生しました: {http_err} - 応答: {response.text}")
+    except requests.exceptions.RequestException as req_err:
+        logging.error(f"❌ Telegram Photo API接続エラーが発生しました: {req_err}")
     except Exception as e:
-        logging.error(f"Telegramチャート画像の送信に失敗しました: {e}")
+        logging.error(f"❌ Telegramチャート画像の送信中に予期せぬエラーが発生しました: {e}")
 
 
 # -----------------
-# テクニカル指標のシミュレーション関数
+# テクニカル指標のシミュレーション関数 (変更なし)
 # -----------------
 
 def simulate_technical_signals(data_count: int, current_price: int, ma50: int) -> tuple[bool, bool, bool]:
@@ -116,14 +122,11 @@ def simulate_technical_signals(data_count: int, current_price: int, ma50: int) -
     戻り値: (RSI買われすぎシグナル, MACDゴールデンクロスシグナル, MACDデッドクロスシグナル)
     """
     # 1. RSI (Relative Strength Index) シミュレーション
-    # データ件数の剰余や価格のMAに対する位置でシグナルを発生させる
-    # RSIが70以上（買われすぎ）の場合、下降圧力がかかる可能性をシミュレート
     rsi_overbought = False
     if data_count % 7 == 0 and current_price > ma50 * 1.005:
         rsi_overbought = True
         
     # 2. MACD (Moving Average Convergence Divergence) シミュレーション
-    # トレンドの転換シグナルをシミュレート
     macd_golden_cross = False  # 買いシグナル
     macd_dead_cross = False    # 売りシグナル
     
@@ -141,7 +144,7 @@ def simulate_pivot_data(current_price: int, data_count: int) -> tuple[int, int, 
     前日の高値(H), 安値(L), 終値(C)をシミュレーションし、ピボットポイント(P)に必要な値を生成します。
     """
     # 過去の変動率をシミュレート (データ件数によってボラティリティを変える)
-    volatility = 0.02 + (data_count % 1000 / 1000) * 0.01  # 2%から3%の範囲でボラティリティを変動
+    volatility = 0.02 + (data_count % 1000 / 1000) * 0.01 
     
     # 終値 (C) は現在価格に近い値
     close_price = int(current_price * random.uniform(0.998, 1.002))
@@ -160,17 +163,9 @@ def simulate_pivot_data(current_price: int, data_count: int) -> tuple[int, int, 
 def calculate_pivot_levels(H: int, L: int, C: int) -> tuple[int, int, int]:
     """
     クラシックピボットポイントの計算式に基づいて、P, R1, S1を算出します。
-    R1 = 2P - L
-    S1 = 2P - H
-    P = (H + L + C) / 3
     """
-    # P (Pivot Point)
     P = int((H + L + C) / 3)
-    
-    # R1 (Resistance 1)
     R1 = int(2 * P - L)
-    
-    # S1 (Support 1)
     S1 = int(2 * P - H)
     
     return P, R1, S1
@@ -230,15 +225,12 @@ def get_real_time_btc_data(data_count: int) -> tuple[int, int, int, int, int, in
     P, R1, S1 = calculate_pivot_levels(H, L, C)
     
     # 3. MA50のシミュレーション（トレンド追従の特性を模倣）
+    ma50_bias = 0.999 + (random.randint(0, 10) / 1000) 
+    ma50_base = P 
     
-    # 過去のボラティリティの中心値にPを適用し、MAはP付近に落ち着くようにする
-    ma50_bias = 0.999 + (random.randint(0, 10) / 1000) # ±0.1%の変動
-    ma50_base = P # ピボットポイントをMA50の基準とする
-    
-    # データ件数に基づいて、MA50が上向きか下向きかをシミュレート
-    if data_count % 5 == 1: # 短期的なデッドクロスをシミュレート
+    if data_count % 5 == 1: 
         ma50_final = int(ma50_base * random.uniform(0.99, 0.995))
-    elif data_count % 5 == 4: # 短期的なゴールデンクロスをシミュレート
+    elif data_count % 5 == 4: 
         ma50_final = int(ma50_base * random.uniform(1.005, 1.01))
     else:
         ma50_final = int(ma50_base * ma50_bias)
@@ -257,7 +249,6 @@ def generate_chart_image(current_price: int, P: int, r1: int, s1: int, ma50: int
     start_date = end_date - datetime.timedelta(days=30)
     dates = pd.date_range(start_date, end_date, freq='D')
     
-    # 過去価格をシミュレート (Pを中心にランダムな変動を加える)
     price_series = [current_price]
     for _ in range(len(dates) - 1, 0, -1):
         change = random.uniform(-0.015 * P, 0.015 * P)
@@ -307,7 +298,7 @@ def generate_chart_image(current_price: int, P: int, r1: int, s1: int, ma50: int
     ax.text(df.index[-1] + datetime.timedelta(days=0.5), current_price, f' 現在価格 ${current_price:,}', color='black', ha='left', va='center', fontsize=11, weight='bold')
 
     # 3. グラフの装飾
-    is_simulated = current_price > 0 and current_price < 59000
+    is_simulated = current_price > 0 and current_price < 65000 # 65k未満をシミュレーション価格と暫定的に判定
     price_source_label = "（CoinGecko API）" if not is_simulated else "（シミュレーション）"
     ax.set_title(f'BTC価格推移と主要な価格帯 {price_source_label}', fontsize=16, color='#1f2937', weight='bold')
     ax.set_xlabel('日付', fontsize=12)
@@ -348,7 +339,6 @@ def update_report_data():
     global_data['scheduler_status'] = '稼働中'
     
     # 2. 実践的なテクニカルレベルと価格の取得
-    # (現在価格, H, L, C, P, R1, S1, MA50) を受け取る
     current_price, H, L, C, P, R1, S1, ma50 = get_real_time_btc_data(data_item_count) 
     
     # 3. テクニカルシグナルのシミュレーション
@@ -367,7 +357,7 @@ def update_report_data():
 
     # 価格取得のソースを判定し、メッセージに含める
     price_source = "リアルタイム価格 (CoinGecko)"
-    if current_price < 60000 : 
+    if current_price < 65000: 
         price_source = "シミュレーション価格 (API取得失敗時)"
     
     price_analysis = [
@@ -468,7 +458,6 @@ def update_report_data():
     # 5. 画像生成と画像通知の実行
     try:
         logging.info("チャート画像を生成中...")
-        # Pを引数に追加
         chart_buffer = generate_chart_image(current_price, P, R1, S1, ma50)
         
         photo_caption = (
@@ -479,15 +468,12 @@ def update_report_data():
             f"_詳細は別途送信されるテキストレポートをご確認ください。_"
         )
         
-        # 修正: send_telegram_photo関数が定義されたため、スレッドを正しく開始できます。
         Thread(target=send_telegram_photo, args=(chart_buffer, photo_caption)).start()
         
     except Exception as e:
-        # Note: NameErrorは解決しましたが、その他のエラーを捕捉します。
-        logging.error(f"チャート画像の生成または送信に失敗しました: {e}")
+        logging.error(f"❌ チャート画像の生成または送信に失敗しました: {e}")
 
     # テキストレポートの送信
-    # 修正: send_telegram_message関数が定義されたため、スレッドを正しく開始できます。
     Thread(target=send_telegram_message, args=(report_message,)).start()
     
     logging.info("レポート更新タスク完了。通知キューに追加されました。")
@@ -524,4 +510,5 @@ if not scheduler.running:
     scheduler.start()
     logging.info("✅ スケジューラーを開始しました。")
 
+# アプリ起動時に初回実行をトリガー
 Thread(target=update_report_data).start()
