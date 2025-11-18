@@ -2,6 +2,7 @@ import datetime
 import logging
 import time
 from threading import Thread
+import os # <--- ここを追加: 環境変数を読み込むために必要
 
 # Flask関連のインポート
 from flask import Flask, render_template, jsonify
