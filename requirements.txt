@@ -1,13 +1,8 @@
-pandas
-pandas-ta
-scikit-learn
-numpy
-requests
-joblib
 Flask
-Flask-APScheduler
-python-dotenv
-gunicorn  # <-- 💥 これを追加
-python-telegram-bot
+flask-apscheduler
+requests
+pandas
 matplotlib
 yfinance
+pandas-ta
+gunicorn
