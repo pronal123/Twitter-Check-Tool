@@ -104,15 +104,10 @@ update_report_data()
 
 
 # -----------------
-# サーバー起動 (ローカル開発用)
+# サーバー起動 (ローカル開発用を削除)
 # -----------------
-if __name__ == '__main__':
-    # 環境変数 'PORT' が設定されていればそれを使用し、なければデフォルトの8080を使用
-    port = int(os.environ.get('PORT', 8080))
-    
-    logging.info(f"🚀 Flaskアプリケーションを起動中... (ポート: {port})")
-    
-    # ホストを '0.0.0.0' にバインドし、指定されたポートでサーバーを起動
-    # **注意**: 本番環境では Gunicorn (requirements.txtに含まれている) などのWSGIサーバーを使用してください。
-    # 例: gunicorn app:app
-    app.run(host='0.0.0.0', port=port, debug=False)
+# Gunicornが直接 app:app を読み込むため、ローカル用の起動ブロックは不要です。
+# if __name__ == '__main__':
+#     port = int(os.environ.get('PORT', 8080))
+#     logging.info(f"🚀 Flaskアプリケーションを起動中... (ポート: {port})")
+#     app.run(host='0.0.0.0', port=port, debug=False)
