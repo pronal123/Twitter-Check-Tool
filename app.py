@@ -21,9 +21,15 @@ import pandas_ta as ta
 # Matplotlib 日本語フォント設定
 # -----------------
 # 注: 環境によっては'Noto Sans CJK JP'が利用できない場合があります。その場合はIPAexGothicなどがフォールバックされます。
-plt.rcParams['font.family'] = 'sans-serif'
-plt.rcParams['font.sans-serif'] = ['Noto Sans CJK JP', 'IPAexGothic', 'Hiragino Sans GB', 'Liberation Sans']
-plt.rcParams['axes.unicode_minus'] = False 
+# デプロイ環境で日本語フォントが利用できない場合は、この設定行をコメントアウトしてください。
+# Noto Sans CJK JPはGoogleによって提供されるオープンソースのフォントで、多くのLinux環境で利用可能です。
+try:
+    plt.rcParams['font.family'] = 'sans-serif'
+    plt.rcParams['font.sans-serif'] = ['Noto Sans CJK JP', 'IPAexGothic', 'Hiragino Sans GB', 'Liberation Sans']
+    plt.rcParams['axes.unicode_minus'] = False 
+except Exception as e:
+    # フォント設定が失敗した場合のフォールバック
+    logging.warning(f"日本語フォント設定に失敗しました: {e}. 英語フォントで続行します。")
 
 # Flask関連のインポート
 from flask import Flask, render_template, jsonify
@@ -32,8 +38,9 @@ from flask_apscheduler import APScheduler
 # -----------------
 # Telegram Bot設定
 # -----------------
+# 環境変数からトークンとチャットIDを取得。未設定の場合はデフォルト値。
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', 'YOUR_BOT_TOKEN_HERE') 
-TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '5890119671') 
+TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '5890119671') # あなたのChat IDに置き換えてください
 
 TELEGRAM_API_BASE_URL = f'https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}'
 TELEGRAM_API_URL_MESSAGE = f'{TELEGRAM_API_BASE_URL}/sendMessage'
@@ -50,21 +57,23 @@ logging.basicConfig(level=logging.INFO,
 # -----------------
 # アプリケーション初期化
 # -----------------
+# 'app.py'と同じディレクトリにHTMLファイルがある想定で、template_folderを'.'に設定
 app = Flask(__name__, template_folder='.') 
 scheduler = APScheduler()
 
-# グローバル状態
+# グローバル状態（ダッシュボード表示用）
 global_data = {
     'last_updated': 'N/A',
-    'data_range': '過去10日間', 
+    'data_range': '過去10日間 (1d インターバル)', 
     'data_count': 0,
     'scheduler_status': '初期化中',
     'current_price': 0,
-    'strategy': 'データ処理中'
+    'strategy': 'データ処理中',
+    'bias': 'N/A'
 }
 
 # -----------------
-# Telegram 通知ヘルパー関数 (変更なし)
+# Telegram 通知ヘルパー関数
 # -----------------
 def send_telegram_message(message):
     """Telegramにテキストメッセージを送信します。"""
@@ -73,7 +82,7 @@ def send_telegram_message(message):
         return
 
     try:
-        logging.info(f"Telegramにテキストメッセージを送信中... Chat ID: {TELEGRAM_CHAT_ID}")
+        logging.info("Telegramにテキストメッセージを送信中...")
         response = requests.post(
             TELEGRAM_API_URL_MESSAGE,
             json={'chat_id': TELEGRAM_CHAT_ID, 'text': message, 'parse_mode': 'Markdown'},
@@ -96,7 +105,7 @@ def send_telegram_photo(photo_buffer: io.BytesIO, caption: str):
         return
 
     try:
-        logging.info(f"Telegramにチャート画像を送信中... Chat ID: {TELEGRAM_CHAT_ID}")
+        logging.info("Telegramにチャート画像を送信中...")
 
         response = requests.post(
             TELEGRAM_API_URL_PHOTO,
@@ -124,19 +133,19 @@ def fetch_btc_ohlcv_data():
     yfinanceからBTC-USDの日足データを取得します。（過去10日間）
     """
     ticker = "BTC-USD"
-    period = "10d" 
+    # 短期間のテストを想定し10日間に設定。MA50の計算のためにはより長い期間が必要。
+    period = "60d" 
     interval = "1d" 
     
     try:
         logging.info(f"yfinanceから{ticker}の過去データ（{period}）を取得中...")
-        df = yf.download(ticker, period=period, interval=interval)
+        # yfinanceのデータ取得はリトライ機能が組み込まれていないため、単純にダウンロードを試みます。
+        df = yf.download(ticker, period=period, interval=interval, progress=False)
         
         if df.empty:
             raise ValueError("取得したデータが空です。")
             
-        # インデックス名を'Date'に設定
         df.index.name = 'Date'
-        # 終値 (Close) を小数点以下2桁に丸める
         df['Close'] = df['Close'].round(2)
         
         logging.info(f"✅ 過去データ取得成功。件数: {len(df)}")
@@ -155,22 +164,16 @@ def analyze_data(df: pd.DataFrame) -> pd.DataFrame:
         return df
         
     # --- 移動平均線 (SMA) ---
-    # 中期トレンドの指標としてSMA50日を使用
     df.ta.sma(length=50, append=True) 
     
     # --- 相対力指数 (RSI) ---
     df.ta.rsi(length=14, append=True)
     
     # --- MACD (Moving Average Convergence Divergence) ---
-    # MACD, MACD_H, MACD_Sの3列が追加される
     df.ta.macd(fast=12, slow=26, signal=9, append=True)
     
     # --- ボリンジャーバンド (BBANDS) ---
-    # BBL, BBM, BBU, BBB, BBPの5列が追加される
     df.ta.bbands(length=20, append=True) 
-    
-    # 最新のデータを使用するため、NaN行を削除
-    df.dropna(inplace=True)
     
     logging.info("✅ テクニカル指標の計算完了。")
     return df
@@ -184,7 +187,6 @@ def calculate_pivot_levels_from_data(H: float, L: float, C: float) -> tuple[floa
     R1 = 2 * P - L
     S1 = 2 * P - H
     
-    # 小数点以下2桁に丸めて返却
     return round(P, 2), round(R1, 2), round(S1, 2)
 
 
@@ -192,16 +194,23 @@ def generate_strategy(df: pd.DataFrame) -> dict:
     """
     最新のテクニカル指標に基づいて、総合的な戦略と予測を決定します。
     """
-    if df.empty:
+    # MA50やBBandsなど、計算に過去データが必要な指標を持つ行のみを抽出
+    df_clean = df.dropna()
+    
+    if len(df_clean) < 2 or len(df) < 2:
+        # データ不足時の緊急対応
+        price = df['Close'].iloc[-1] if not df.empty else 0
         return {
+            'price': price,
+            'P': price, 'R1': price * 1.01, 'S1': price * 0.99, 'MA50': price, 'RSI': 50,
             'bias': 'データ不足',
-            'strategy': 'データ取得を待ってください。',
-            'details': ['過去データが不足しているため、分析できません。'],
+            'strategy': 'MA50/BBandsに必要なデータが不足。データ期間を延ばしてください。',
+            'details': ['分析に必要な十分な期間のデータが揃っていません。'],
             'predictions': {'1h': 'N/A', '4h': 'N/A', '12h': 'N/A', '24h': 'N/A'}
         }
 
-    latest = df.iloc[-1]
-    prev_latest = df.iloc[-2] if len(df) >= 2 else latest
+    latest = df_clean.iloc[-1]
+    prev_latest = df_clean.iloc[-2]
 
     # 最新の指標値の取得
     price = latest['Close']
@@ -210,7 +219,7 @@ def generate_strategy(df: pd.DataFrame) -> dict:
     macd_h = latest['MACDh_12_26_9'] # MACDヒストグラム
     
     # ピボットポイントの計算（前日のデータを使用）
-    H_prev, L_prev, C_prev = latest['High'], latest['Low'], latest['Close'] 
+    H_prev, L_prev, C_prev = df.iloc[-2]['High'], df.iloc[-2]['Low'], df.iloc[-2]['Close'] 
     P, R1, S1 = calculate_pivot_levels_from_data(H_prev, L_prev, C_prev) 
     
     # 総合バイアスと戦略の決定
@@ -221,20 +230,19 @@ def generate_strategy(df: pd.DataFrame) -> dict:
     # --- 1. トレンドバイアス (MA50と価格の関係) ---
     if price > ma50 * 1.005:
         bias = "強い上昇"
-        details.append(f"・*MA50*: 価格がMA50 ({ma50:,.2f}) を明確に上回っており、中期的に強い強気トレンドが継続しています。")
+        details.append(f"・*MA50*: 価格 ({price:,.2f}) がMA50 ({ma50:,.2f}) を明確に上回り、中期的に強い強気トレンドです。")
     elif price < ma50 * 0.995:
         bias = "強い下降"
-        details.append(f"・*MA50*: 価格がMA50 ({ma50:,.2f}) を明確に下回っており、中期的な弱気トレンドが優勢です。")
+        details.append(f"・*MA50*: 価格 ({price:,.2f}) がMA50 ({ma50:,.2f}) を明確に下回り、中期的な弱気トレンドが優勢です。")
     else:
         bias = "レンジ"
         details.append(f"・*MA50*: 価格がMA50 ({ma50:,.2f}) 付近で推移しており、レンジ相場が想定されます。")
 
     # --- 2. モメンタムシグナル (MACD) ---
-    # MACDヒストグラムがゼロラインを上抜け（ゴールデンクロスに近い）
+    # MACDとシグナルラインのクロス
     if latest['MACD_12_26_9'] > latest['MACDs_12_26_9'] and prev_latest['MACD_12_26_9'] < prev_latest['MACDs_12_26_9']:
         details.append("・*MACD*: ゴールデンクロス（買いシグナル）が確認されました。短期的なモメンタムの上昇が期待できます。")
         bias = "上昇" if bias == "中立" or bias == "レンジ" else bias
-    # MACDヒストグラムがゼロラインを下抜け（デッドクロスに近い）
     elif latest['MACD_12_26_9'] < latest['MACDs_12_26_9'] and prev_latest['MACD_12_26_9'] > prev_latest['MACDs_12_26_9']:
         details.append("・*MACD*: デッドクロス（売りシグナル）が発生しました。短期的なモメンタムの低下に注意が必要です。")
         bias = "下降" if bias == "中立" or bias == "レンジ" else bias
@@ -250,23 +258,24 @@ def generate_strategy(df: pd.DataFrame) -> dict:
         details.append(f"・*RSI*: {rsi:,.2f}で中立圏。トレンドの勢いは過熱していません。")
         
     # --- 4. 総合戦略の決定 ---
-    if bias == "強い上昇":
+    if bias == "強い上昇" or bias == "上昇":
         strategy = f"トレンドフォローの押し目買い戦略。S1 ({S1:,.2f}) やP ({P:,.2f}) への短期的な反落時が買い場。"
-    elif bias == "強い下降":
+    elif bias == "強い下降" or bias == "下降":
         strategy = f"トレンドフォローの戻り売り戦略。R1 ({R1:,.2f}) やP ({P:,.2f}) への短期的な上昇時が売り場。"
-    elif bias == "レンジ":
+    elif bias == "レンジ" or bias == "中立":
         # ボリンジャーバンドの幅 (BBB) が狭い場合（圧縮）はブレイクアウト待ち
-        if latest['BBB_20_2.0'] < 10: # BBB < 10%はボラティリティ低下を示す
+        if 'BBB_20_2.0' in latest and latest['BBB_20_2.0'] < 10: # BBB < 10%はボラティリティ低下を示す
              strategy = f"ボラティリティ圧縮中。R1 ({R1:,.2f}) / S1 ({S1:,.2f}) のブレイクアウト待ち。"
         else:
              strategy = f"レンジ取引。S1 ({S1:,.2f}) 付近で買い、R1 ({R1:,.2f}) 付近で売り。"
 
     # --- 短期予測 (簡略化) ---
+    # MACDヒストグラム (macd_h) がプラスなら買いモメンタム、マイナスなら売りモメンタム
     predictions = {
-        "1h": "上昇 📈" if macd_h > 0 and rsi < 60 else "レンジ ↔️",
-        "4h": "下降 📉" if bias == "強い下降" and rsi < 50 else "レンジ ↔️",
-        "12h": "上昇 📈" if bias == "強い上昇" and price > P else "レンジ ↔️",
-        "24h": "上昇 📈" if bias == "強い上昇" else "レンジ ↔️" 
+        "1h": "上昇 📈" if macd_h > 0 else "下降 📉",
+        "4h": "上昇 📈" if price > ma50 else "下降 📉",
+        "12h": "上昇 📈" if price > P else "下降 📉",
+        "24h": bias
     }
     
     return {
@@ -283,29 +292,30 @@ def generate_chart_image(df: pd.DataFrame, analysis_result: dict) -> io.BytesIO:
     """
     終値と主要なテクニカル指標を含むチャート画像を生成します。
     """
+    # 必要な指標列がNaNでないデータのみを使用
+    df_clean = df.dropna(subset=['SMA_50', 'BBU_20_2.0', 'BBL_20_2.0'])
+    
     fig, ax = plt.subplots(figsize=(10, 6), dpi=100) 
     
     # --- 1. 価格ライン ---
     ax.plot(df.index, df['Close'], label='BTC 終値 (USD)', color='#059669', linewidth=2)
     
     # --- 2. テクニカル指標ラインの描画 ---
+    if not df_clean.empty:
+        # 50日移動平均線 (MA50)
+        ax.plot(df_clean.index, df_clean['SMA_50'], label='SMA 50', color='#fbbf24', linestyle='-', linewidth=1.5, alpha=0.7)
+        
+        # ボリンジャーバンド (Upper/Lower Band)
+        ax.plot(df_clean.index, df_clean['BBU_20_2.0'], label='BB Upper (+2σ)', color='#ef4444', linestyle=':', linewidth=1)
+        ax.plot(df_clean.index, df_clean['BBL_20_2.0'], label='BB Lower (-2σ)', color='#3b82f6', linestyle=':', linewidth=1)
     
-    # 50日移動平均線 (MA50)
-    ax.plot(df.index, df['SMA_50'], label='SMA 50', color='#fbbf24', linestyle='-', linewidth=1.5, alpha=0.7)
-    
-    # ボリンジャーバンド (Upper/Lower Band)
-    ax.plot(df.index, df['BBU_20_2.0'], label='BB Upper', color='#ef4444', linestyle=':', linewidth=1)
-    ax.plot(df.index, df['BBL_20_2.0'], label='BB Lower', color='#3b82f6', linestyle=':', linewidth=1)
-    
-    # --- 3. 最新の主要レベルの描画 (価格分析結果から取得) ---
+    # --- 3. 最新の主要レベルの描画 ---
     price = analysis_result['price']
     P, R1, S1 = analysis_result['P'], analysis_result['R1'], analysis_result['S1']
     
     # ピボットポイント (P)
     ax.axhline(P, color='#9333ea', linestyle='--', linewidth=1.5, alpha=0.8)
     ax.text(df.index[-1], P, f' P: ${P:,.2f}', color='#9333ea', ha='right', va='center', fontsize=9, bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', boxstyle='round,pad=0.3'))
-
-    # R1/S1の線は省略し、現在価格と最新のテクニカルラインに集中させます。
 
     # 現在価格の点とラベル
     ax.scatter(df.index[-1], price, color='black', s=80, zorder=5) 
@@ -318,7 +328,7 @@ def generate_chart_image(df: pd.DataFrame, analysis_result: dict) -> io.BytesIO:
     
     formatter = DateFormatter("%m/%d")
     ax.xaxis.set_major_formatter(formatter)
-    ax.xaxis.set_major_locator(DayLocator()) # 日付を毎日表示
+    ax.xaxis.set_major_locator(DayLocator()) 
     
     plt.xticks(rotation=45, ha='right')
     plt.grid(True, linestyle=':', alpha=0.6)
@@ -352,8 +362,8 @@ def update_report_data():
         logging.error("致命的エラー: データ取得に失敗したため、レポートを生成できません。")
         global_data['scheduler_status'] = 'エラー'
         global_data['strategy'] = 'データ取得エラー'
-        # エラーメッセージを通知
-        error_msg = f"❌ *BTC分析レポート生成エラー*\n\nデータ取得に失敗しました。yfinanceのステータスまたはネットワーク接続を確認してください。\n最終更新: {now.strftime('%Y-%m-%d %H:%M:%S')}"
+        global_data['bias'] = 'N/A'
+        error_msg = f"❌ *BTC分析レポート生成エラー*\n\nデータ取得に失敗しました。ネットワーク接続を確認してください。\n最終更新: {now.strftime('%Y-%m-%d %H:%M:%S')}"
         Thread(target=send_telegram_message, args=(error_msg,)).start()
         return
 
@@ -370,6 +380,7 @@ def update_report_data():
     global_data['scheduler_status'] = '稼働中'
     global_data['current_price'] = analysis_result['price']
     global_data['strategy'] = analysis_result['strategy']
+    global_data['bias'] = analysis_result['bias']
     
     # 5. レポートの整形
     price = analysis_result['price']
@@ -464,6 +475,7 @@ if not scheduler.running:
     scheduler.init_app(app)
     
     # 実践的分析のため、更新頻度を下げて日足ベースの分析に合わせる（例：6時間ごと）
+    # アプリケーションの起動後、6時間ごとにupdate_report_dataが実行されます。
     scheduler.add_job(id='report_update_job', func=update_report_data, 
                       trigger='interval', hours=6, replace_existing=True) 
     
@@ -472,3 +484,15 @@ if not scheduler.running:
 
 # アプリ起動時に初回実行をトリガー
 Thread(target=update_report_data).start()
+
+# -----------------
+# サーバーの実行 (ポートバインディングの修正)
+# -----------------
+# RenderなどのPaaS環境では、Gunicornが環境変数PORTを使用してこのアプリを実行します。
+# 'if __name__ == '__main__':'ブロックはローカルテスト用ですが、
+# 環境変数PORTの読み込みは、Gunicornが起動に失敗したという以前のログメッセージに対応しています。
+if __name__ == '__main__':
+    # 環境変数PORTが存在すればそれを使用し、なければデフォルトの5000を使用
+    port = int(os.environ.get('PORT', 5000))
+    logging.info(f"ローカルサーバーを {port} ポートで開始します。")
+    app.run(host='0.0.0.0', port=port)
