@@ -19,7 +19,9 @@ logging.basicConfig(level=logging.INFO,
 # アプリケーション初期化
 # -----------------
 # Flaskアプリのインスタンスを作成
-app = Flask(__name__, template_folder='templates')
+# 修正点: template_folderの指定を削除し、Flaskがルートディレクトリの
+# index.htmlをテンプレートとして使用できるようにします。
+app = Flask(__name__) 
 # スケジューラーのインスタンスを作成
 scheduler = APScheduler()
 
@@ -68,8 +70,7 @@ def update_report_data():
 @app.route('/')
 def index():
     """ダッシュボードの表示"""
-    # HTMLのプレビューでは、このルートで `templates/index.html` ではなく、
-    # 直下の `index.html` がレンダリングされることに注意してください。
+    # テンプレート名を参照 (ルートにある index.html を使用)
     return render_template('index.html', title='ML BOT分析レポート ダッシュボード', data=global_data)
 
 # -----------------
