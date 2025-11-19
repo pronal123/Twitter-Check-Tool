@@ -165,7 +165,7 @@ def fetch_btc_ohlcv_data(period: str, interval: str) -> pd.DataFrame:
                 logging.error("❌ 最大リトライ回数に達しました。データ取得を中止し、空のDataFrameを返します。")
                 return pd.DataFrame() # 空のDataFrameを返して呼び出し元で処理させる
 
-# === 【新規追加】リアルタイム価格取得関数 ===
+# === 【修正点: リアルタイム価格取得関数】 ===
 def fetch_current_price() -> float:
     """
     yfinanceからBTC-USDの最新の価格をリアルタイムで取得します。
@@ -482,7 +482,7 @@ def generate_strategy(df_long: pd.DataFrame, df_short: pd.DataFrame) -> dict:
     }
 
     return {
-        # ここで返されるpriceは、分析に使用した日足の終値です。
+        # ここで返されるpriceは、分析に使用した日足の終値です。（後でリアルタイム価格に上書きされる可能性あり）
         'price': price,
         'P': P_long, 'R1': R1_long, 'S1': S1_long, 'MA50': ma50, 'RSI': rsi,
         'bias': bias,
@@ -502,14 +502,14 @@ def generate_chart_image(df: pd.DataFrame, analysis_result: dict) -> io.BytesIO:
     BBL_COL = 'BBL_20_2.0_2.0'
     
     # 描画に必要なカラムをチェック（SMA_200は長期トレンドのため必須）
-    required_cols = ['Close', 'High', 'Low', 'SMA_50', 'SMA_200', BBU_COL, BBL_COL]
+    required_cols = ['Close', 'High', 'Low', 'SMA_50', 'SMA_200']
     
-    # NaN値が多く、描画ができない可能性を考慮してNaNを含む行をドロップ
     df_plot = df.dropna(subset=['Close', 'SMA_50', 'SMA_200']).copy() 
     
     # ボリンジャーバンドがデータに存在しない可能性に対応するため、リストから削除
-    if BBU_COL not in df_plot.columns: required_cols.remove(BBU_COL)
-    if BBL_COL not in df_plot.columns: required_cols.remove(BBL_COL)
+    bb_cols_exist = BBU_COL in df_plot.columns and BBL_COL in df_plot.columns
+    if bb_cols_exist:
+        required_cols.extend([BBU_COL, BBL_COL])
     
     # 最終的なチェック
     if not all(col in df_plot.columns for col in required_cols):
@@ -532,7 +532,7 @@ def generate_chart_image(df: pd.DataFrame, analysis_result: dict) -> io.BytesIO:
     ax.plot(df_plot.index, df_plot['SMA_200'], label='SMA 200 (長期)', color='#ef4444', linestyle='--', linewidth=1.5, alpha=0.9)
 
     # ボリンジャーバンド (カラムが存在する場合のみ描画)
-    if BBU_COL in df_plot.columns and BBL_COL in df_plot.columns:
+    if bb_cols_exist:
         ax.plot(df_plot.index, df_plot[BBU_COL], label='BB Upper (+2σ)', color='#ef4444', linestyle=':', linewidth=1)
         ax.plot(df_plot.index, df_plot[BBL_COL], label='BB Lower (-2σ)', color='#3b82f6', linestyle=':', linewidth=1)
 
@@ -598,7 +598,7 @@ def update_report_data():
     logging.info("スケジュールされたレポート更新タスク開始（実践分析モード）...")
     
     # 2. データ取得 (日足と4時間足)
-    # 【変更点A】リアルタイム価格の取得
+    # 【修正点A: リアルタイム価格の取得】
     realtime_price = fetch_current_price()
 
     df_long = fetch_btc_ohlcv_data(LONG_PERIOD, LONG_INTERVAL)
@@ -658,7 +658,7 @@ def update_report_data():
     # 5. 戦略と予測の生成
     analysis_result = generate_strategy(df_long_analyzed, df_short_analyzed)
 
-    # 【変更点B】リアルタイム価格を分析結果に反映
+    # 【修正点B: リアルタイム価格を分析結果に反映】
     if realtime_price > 0:
         analysis_result['price'] = realtime_price
 
@@ -688,7 +688,7 @@ def update_report_data():
     formatted_RSI = f"`{rsi:,.2f}`"
 
     price_analysis = [
-        f"💰 *現在価格 (BTC-USD)*: {formatted_current_price}", # <- ここに最新価格が通知されます
+        f"💰 *現在価格 (BTC-USD)*: {formatted_current_price}", # <-- 最新のリアルタイム価格が反映される
         f"🟡 *ピボットポイント (P, 日足)*: {formatted_P}",
         f"🔼 *主要レジスタンス (R1, 日足)*: {formatted_R1}",
         f"🔽 *主要サポート (S1, 日足)*: {formatted_S1}",
