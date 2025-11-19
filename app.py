@@ -589,14 +589,14 @@ def generate_chart_image(df: pd.DataFrame, analysis_result: dict) -> io.BytesIO:
     required_cols = ['Close', 'High', 'Low', 'Volume', 'SMA_50', 'SMA_200', BBU_COL, BBL_COL, VMA_COL]
     
     # NaN行を削除してから描画に渡す（描画エラーを防ぐため）。
-    # ただし、今回は出来高VMAの計算開始地点（約20行目）から描画を開始するため、
-    # 必要な列が欠損している行のみを削除する。
-    df_plot = df.dropna(subset=['Close', 'SMA_50', 'Volume', VMA_COL]).copy() 
+    # 【修正】 VMA_COLは計算開始地点でNaN値を持つため、dropnaのsubsetから除外する。
+    # プロットライブラリはNaN値を自動でスキップするため問題ない。
+    df_plot = df.dropna(subset=['Close', 'SMA_50', 'Volume']).copy() 
     
     # 必要なカラムが全て存在するか確認
     # このチェックはdf_plot（dropna後）に対して行い、実行できない場合は空のバッファを返す。
     if not all(col in df_plot.columns for col in required_cols):
-        logging.error(f"チャート描画に必要なカラムの一部が不足しています。描画に必要なカラムが揃うまで待機します。")
+        logging.error(f"チャート描画に必要なカラムの一部が不足しています: {required_cols}. 描画に必要なカラムが揃うまで待機します。")
         return io.BytesIO()
 
     # === NEW: 出来高用のサブプロットを追加 (2段構成) ===
@@ -961,7 +961,6 @@ def generate_index_html():
             <p class="text-gray-600 mt-2" id="last-updated">最終更新: N/A</p>
         </header>
 
-        <!-- メインサマリーカード -->
         <div class="card mb-8">
             <div class="flex flex-wrap items-center justify-between">
                 <div class="mb-4 sm:mb-0">
@@ -988,7 +987,6 @@ def generate_index_html():
             </div>
         </div>
 
-        <!-- パフォーマンスとステータス -->
         <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
             <div class="card">
                 <div class="stat-label">BOTステータス</div>
@@ -1004,20 +1002,16 @@ def generate_index_html():
             </div>
         </div>
         
-        <!-- 短期予測 -->
         <div class="card mb-8">
             <h2 class="text-2xl font-semibold mb-4 text-gray-800">短期予測 (Predictions)</h2>
             <div id="predictions" class="grid grid-cols-2 sm:grid-cols-4 gap-4">
-                <!-- 予測データがここに挿入されます -->
-            </div>
+                </div>
         </div>
 
-        <!-- 技術指標とレベル -->
         <div class="card mb-8">
             <h2 class="text-2xl font-semibold mb-4 text-gray-800">主要テクニカル指標とレベル</h2>
             <div class="grid grid-cols-2 md:grid-cols-4 gap-4" id="tech-indicators">
-                <!-- 技術指標データがここに挿入されます -->
-            </div>
+                </div>
         </div>
         
         <footer class="text-center text-gray-500 text-sm pt-4">
