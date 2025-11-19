@@ -2,208 +2,143 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ title }}</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
-        /* Google Fonts - Inter */
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
-        body {
-            font-family: 'Inter', sans-serif;
-            background-color: #f0f4f8; /* Light background */
-        }
-        .card {
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08); /* Stronger shadow */
-            transition: transform 0.2s, box-shadow 0.2s;
-        }
-        .card:hover {
-            transform: translateY(-3px);
-            box-shadow: 0 6px 15px rgba(0, 0, 0, 0.12);
-        }
-        .loading {
-            border: 4px solid #f3f3f3;
-            border-top: 4px solid #3b82f6;
-            border-radius: 50%;
-            width: 30px;
-            height: 30px;
-            animation: spin 1s linear infinite;
-        }
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f7f9; color: #333; margin: 0; padding: 20px; }
+        .container { max-width: 900px; margin: 0 auto; background-color: #fff; padding: 30px; border-radius: 10px; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1); }
+        h1 { color: #007bff; border-bottom: 3px solid #007bff; padding-bottom: 10px; margin-bottom: 20px; font-size: 28px; }
+        h2 { color: #34495e; margin-top: 25px; font-size: 22px; }
+        .card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; margin-bottom: 30px; }
+        .card { background-color: #ecf0f1; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05); }
+        .card-title { font-weight: bold; color: #7f8c8d; margin-bottom: 5px; font-size: 14px; }
+        .card-value { font-size: 24px; font-weight: 600; color: #2c3e50; }
+        /* ステータスカラー */
+        .status-ok { color: #2ecc71; font-weight: bold; }
+        .status-error { color: #e74c3c; font-weight: bold; }
+        .status-pending { color: #f39c12; font-weight: bold; }
+        /* 戦略表示 */
+        .strategy { background-color: #e8f5e9; border: 1px solid #c8e6c9; padding: 15px; border-radius: 8px; font-size: 16px; font-weight: 500; color: #1b5e20; }
+        /* バックテストリターン */
+        .backtest-negative { color: #e74c3c; }
+        .backtest-positive { color: #2ecc71; }
     </style>
 </head>
-<body class="p-8">
+<body>
+    <div class="container">
+        <h1>₿ BTC実践テクニカル分析 BOT ダッシュボード</h1>
+        <p>リアルタイム分析とバックテストによる戦略検証</p>
 
-    <div class="max-w-6xl mx-auto">
-        <header class="mb-8">
-            <h1 class="text-4xl font-extrabold text-gray-900 flex items-center">
-                <span class="text-yellow-500 mr-3">₿</span> {{ title }}
-            </h1>
-            <p class="text-gray-500 mt-1">リアルタイム分析とバックテストによる戦略検証</p>
-        </header>
-
-        <div id="loading-state" class="text-center py-20 hidden">
-            <div class="loading mx-auto mb-4"></div>
-            <p class="text-gray-600 font-medium">データ取得・分析実行中... しばらくお待ちください。</p>
-        </div>
-
-        <div id="metric-cards" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-
-            <div class="card bg-gray-800 text-white p-5 rounded-xl">
-                <h3 class="text-lg font-semibold opacity-90">現在価格 (USD)</h3>
-                <p id="current-price" class="text-4xl font-bold mt-2">$ N/A</p>
-                <p id="last-updated" class="text-sm opacity-70 mt-1">最終更新: N/A</p>
+        <div class="card-grid">
+            <div class="card">
+                <div class="card-title">💰 現在価格 (BTC-USD)</div>
+                <div class="card-value" id="current_price">N/A</div>
             </div>
-
-            <div id="bias-card" class="card bg-blue-600 text-white p-5 rounded-xl">
-                <h3 class="text-lg font-semibold opacity-90">中期バイアス (日足)</h3>
-                <p id="bias" class="text-4xl font-bold mt-2">N/A</p>
-                <p class="text-sm opacity-70 mt-1">トレンド傾向</p>
+            <div class="card">
+                <div class="card-title">📅 最終更新</div>
+                <div class="card-value" id="last_updated">N/A</div>
             </div>
-
-            <div id="status-card" class="card bg-green-500 text-white p-5 rounded-xl">
-                <h3 class="text-lg font-semibold opacity-90">BOTステータス</h3>
-                <p id="scheduler-status" class="text-4xl font-bold mt-2">N/A</p>
-                <p id="data-range" class="text-sm opacity-70 mt-1">N/A</p>
+            <div class="card">
+                <div class="card-title">🔄 BOTステータス</div>
+                <div class="card-value" id="scheduler_status">初期化中</div>
             </div>
-
-            <div class="card bg-yellow-600 text-white p-5 rounded-xl transition duration-200 hover:shadow-lg">
-                <div class="flex justify-between items-start">
-                    <h3 class="text-lg font-semibold opacity-90">バックテスト結果 (1年)</h3>
-                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0a2 2 0 002 2h2a2 2 0 002-2v-6a2 2 0 00-2-2h-2a2 2 0 00-2 2v6a2 2 0 002 2z"></path></svg>
-                </div>
-                <div id="backtest-results" class="mt-3 space-y-2">
-                    <p class="text-sm font-medium">最終利益率: <span id="bt-return" class="font-bold">N/A</span></p>
-                    <p class="text-sm font-medium">PF (利益率): <span id="bt-pf" class="font-bold">N/A</span></p>
-                    <p class="text-sm font-medium">最大DD (リスク): <span id="bt-dd" class="font-bold">N/A</span></p>
-                    <p class="text-sm font-medium">取引回数: <span id="bt-trades" class="font-bold">N/A</span></p>
-                </div>
-            </div>
-
-        </div>
-
-        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div class="lg:col-span-2 card bg-white p-6 rounded-xl">
-                <h2 class="text-2xl font-bold text-gray-800 mb-4">🛡️ 推奨される総合戦略</h2>
-                <p id="strategy" class="text-xl font-medium text-gray-700 leading-relaxed">
-                    N/A
-                </p>
-            </div>
-
-            <div id="predictions-area" class="card bg-white p-6 rounded-xl">
-                 <h2 class="text-2xl font-bold text-gray-800 mb-4">🚀 短期予測 (マルチタイムフレーム)</h2>
-                 <ul id="prediction-list" class="space-y-3">
-                     </ul>
+            <div class="card">
+                <div class="card-title">🎯 総合優勢度</div>
+                <div class="card-value" id="dominance">N/A</div>
             </div>
         </div>
-        
+
+        <h2>🛡️ 推奨される総合戦略</h2>
+        <div class="strategy" id="strategy">データ処理中</div>
+
+        <h2>📈 バックテスト結果 (1年 / 1d足)</h2>
+        <div class="card-grid">
+             <div class="card">
+                <div class="card-title">総リターン率</div>
+                <div class="card-value" id="total_return">N/A</div>
+            </div>
+            <div class="card">
+                <div class="card-title">最終資本</div>
+                <div class="card-value" id="final_capital">N/A</div>
+            </div>
+            <div class="card">
+                <div class="card-title">プロフィットファクター (PF)</div>
+                <div class="card-value" id="profit_factor">N/A</div>
+            </div>
+            <div class="card">
+                <div class="card-title">最大ドローダウン (DD)</div>
+                <div class="card-value" id="max_drawdown">N/A</div>
+            </div>
+        </div>
+
+        <p>処理データ範囲: <span id="data_range">{{ data.data_range }}</span></p>
+
     </div>
 
     <script>
-        // バイアスに基づく色分け
-        const BIAS_COLORS = {
-            '強い上昇': 'bg-green-600',
-            '上昇': 'bg-green-500',
-            'レンジ/中立': 'bg-blue-600',
-            '下降': 'bg-red-500',
-            '強い下降': 'bg-red-600',
-            'データ不足': 'bg-gray-500',
-            'N/A': 'bg-gray-500'
-        };
-
-        // ダッシュボードを更新するメイン関数
-        function updateDashboard(data) {
-            // ローディング状態の解除
-            document.getElementById('loading-state').classList.add('hidden');
-            document.getElementById('metric-cards').classList.remove('hidden');
-
-            // 1. 基本情報の更新
-            const currentPrice = data.current_price > 0 ? `$ ${data.current_price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : 'N/A';
-            document.getElementById('current-price').textContent = currentPrice;
-            document.getElementById('last-updated').textContent = `最終更新: ${data.last_updated}`;
-            document.getElementById('scheduler-status').textContent = data.scheduler_status;
-            document.getElementById('data-range').textContent = data.data_range;
-            document.getElementById('strategy').textContent = data.strategy;
-
-            // 2. バイアスカードの更新
-            const bias = data.bias || 'N/A';
-            const biasCard = document.getElementById('bias-card');
-            biasCard.classList.remove(...Object.values(BIAS_COLORS)); // 既存の色を全て削除
-            biasCard.classList.add(BIAS_COLORS[bias] || BIAS_COLORS['N/A']); // 新しい色を設定
-            document.getElementById('bias').textContent = bias;
-
-            // 3. 予測リストの更新
-            const predictions = data.predictions || {};
-            const predictionList = document.getElementById('prediction-list');
-            predictionList.innerHTML = ''; // リストをクリア
-
-            if (Object.keys(predictions).length > 0) {
-                document.getElementById('predictions-area').classList.remove('hidden');
-                for (const tf in predictions) {
-                    const item = document.createElement('li');
-                    item.className = 'flex justify-between items-center text-gray-700';
-                    item.innerHTML = `
-                        <span class="font-semibold">${tf}後 (${tf})</span>
-                        <span class="font-bold text-lg">${predictions[tf]}</span>
-                    `;
-                    predictionList.appendChild(item);
-                }
-            } else {
-                 document.getElementById('predictions-area').classList.add('hidden');
-            }
-            
-            // 4. バックテスト結果の更新
-            const backtestResults = data.backtest || {};
-            const backtestArea = document.getElementById('backtest-results');
-
-            if (backtestResults && backtestResults.trades !== undefined) {
-                // 数値をカンマ区切りで表示
-                document.getElementById('bt-return').textContent = `${backtestResults.total_return}%`;
-                document.getElementById('bt-pf').textContent = backtestResults.profit_factor;
-                document.getElementById('bt-dd').textContent = `${backtestResults.max_drawdown}%`;
-                document.getElementById('bt-trades').textContent = `${backtestResults.trades} (${backtestResults.win_rate}%)`;
-            } else if (backtestResults && backtestResults.error) {
-                backtestArea.innerHTML = `<p class="text-sm font-bold text-white">エラー: ${backtestResults.error}</p>`;
-            } else {
-                 backtestArea.innerHTML = `<p class="text-sm font-bold text-white">データ不足 / 実行待ち</p>`;
-            }
-        }
-
-        // 10秒ごとにステータスAPIをポーリング
-        async function fetchStatus() {
+        const updateDashboard = async () => {
             try {
+                // /status エンドポイントから最新のJSONデータを取得
                 const response = await fetch('/status');
                 const data = await response.json();
-                updateDashboard(data);
+
+                // 1. メイン指標の更新
+                const priceValue = data.current_price || 0;
+                document.getElementById('current_price').textContent = priceValue ? `$${priceValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : 'N/A';
+                document.getElementById('last_updated').textContent = data.last_updated;
+                document.getElementById('dominance').textContent = data.dominance; // 優勢度を反映
+                document.getElementById('strategy').textContent = data.strategy;
+                
+                // 2. ステータスの更新 (色付け)
+                const statusElement = document.getElementById('scheduler_status');
+                statusElement.textContent = data.scheduler_status;
+                statusElement.className = 'card-value';
+                if (data.scheduler_status && data.scheduler_status.includes('稼働中')) {
+                    statusElement.classList.add('status-ok');
+                } else if (data.scheduler_status && data.scheduler_status.includes('エラー')) {
+                    statusElement.classList.add('status-error');
+                } else {
+                    statusElement.classList.add('status-pending');
+                }
+
+                // 3. バックテスト結果の更新
+                const backtest = data.backtest;
+                if (backtest && backtest.final_capital) {
+                    
+                    const totalReturnElement = document.getElementById('total_return');
+                    const totalReturnRate = backtest.total_return || 0;
+                    totalReturnElement.textContent = `${totalReturnRate}%`;
+                    totalReturnElement.className = 'card-value';
+                    // リターン率に応じて色分け
+                    if (totalReturnRate < 0) {
+                        totalReturnElement.classList.add('backtest-negative');
+                    } else if (totalReturnRate > 0) {
+                        totalReturnElement.classList.add('backtest-positive');
+                    }
+                    
+                    const finalCapitalValue = backtest.final_capital || 0;
+                    document.getElementById('final_capital').textContent = `$${finalCapitalValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                    document.getElementById('profit_factor').textContent = backtest.profit_factor || 'N/A';
+                    document.getElementById('max_drawdown').textContent = `${backtest.max_drawdown || 0}%`;
+                    
+                } else {
+                    document.getElementById('total_return').textContent = 'データ不足 / 実行待ち';
+                    document.getElementById('final_capital').textContent = 'N/A';
+                    document.getElementById('profit_factor').textContent = 'N/A';
+                    document.getElementById('max_drawdown').textContent = 'N/A';
+                }
+
             } catch (error) {
-                console.error('ステータス取得エラー:', error);
-                // エラー発生時はローディング状態に戻す
-                updateDashboard({
-                    scheduler_status: 'エラー',
-                    strategy: '接続エラーによりデータが取得できません。',
-                    current_price: 0,
-                    bias: 'N/A',
-                    last_updated: '接続失敗',
-                    data_count: 0
-                });
+                console.error('Error fetching status data:', error);
+                document.getElementById('scheduler_status').textContent = '通信エラー';
+                document.getElementById('scheduler_status').classList.add('status-error');
             }
-        }
+        };
 
-        // ページロード時の初期化
-        document.addEventListener('DOMContentLoaded', () => {
-            // 初回表示は「初期化中」の状態にしておき、APIの結果を待つ。
-            document.getElementById('scheduler-status').textContent = "初期化中";
-            document.getElementById('loading-state').classList.remove('hidden');
-            document.getElementById('metric-cards').classList.add('hidden');
-
-            // 初回ポーリング
-            fetchStatus(); 
-            
-            // 10秒ごとのポーリングを開始
-            setInterval(fetchStatus, 10000); 
-        });
+        // 初回実行
+        updateDashboard();
+        // 5秒ごとに更新を繰り返す
+        setInterval(updateDashboard, 5000); 
 
     </script>
 </body>
