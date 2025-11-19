@@ -531,7 +531,6 @@ def generate_strategy(df_long: pd.DataFrame, df_short: pd.DataFrame) -> dict:
 
 
 def generate_chart_image(df: pd.DataFrame, analysis_result: dict) -> io.BytesIO:
-# ... (変更なし、省略) ...
     """
     終値と主要なテクニカル指標を含むチャート画像を生成します。
     """
@@ -616,10 +615,20 @@ def update_report_data():
     global global_data
 
     logging.info("スケジュールされたレポート更新タスク開始（実践分析モード）...")
-    now = datetime.datetime.now()
-    last_updated_str = now.strftime('%Y-%m-%d %H:%M:%S')
+    
+    # === 修正箇所: 実行時刻をUTCからJSTへ変換し、次回実行時刻もJSTで計算 ===
+    # JST = UTC + 9時間として処理します。
+    now_utc = datetime.datetime.now()
+    now_jst = now_utc + datetime.timedelta(hours=9)
+    # ---------------------------------------------
+    
+    last_updated_str = now_jst.strftime('%Y-%m-%d %H:%M:%S')
+    
+    # 次回実行時刻の計算 (JSTベースで6時間後)
+    next_run_time = now_jst + datetime.timedelta(hours=6)
+    next_run_time_str = next_run_time.strftime('%Y-%m-%d %H:%M:%S')
 
-    # === 修正点: 処理開始時にステータスを即時更新し、ダッシュボードの「N/A」状態を解消 ===
+    # === 処理開始時のステータス更新 ===
     global_data['scheduler_status'] = 'データ取得・分析中...'
     global_data['last_updated'] = last_updated_str
     
@@ -633,7 +642,7 @@ def update_report_data():
         # エラー発生時はステータスを更新
         global_data['scheduler_status'] = 'エラー（データ取得失敗）'
         global_data['strategy'] = 'データ取得エラー'
-        error_msg = f"❌ *BTC分析レポート生成エラー*\n\nデータ取得に失敗しました。ネットワーク接続を確認するか、数分後に再試行してください。\n最終更新: {last_updated_str}"
+        error_msg = f"❌ *BTC分析レポート生成エラー*\n\nデータ取得に失敗しました。ネットワーク接続を確認するか、数分後に再試行してください。\n最終更新: {last_updated_str} (JST)"
         Thread(target=send_telegram_message, args=(error_msg,)).start()
         return
 
@@ -644,7 +653,7 @@ def update_report_data():
     except Exception as e:
         logging.error(f"致命的エラー: テクニカル分析中にエラーが発生しました: {e}", exc_info=True)
         global_data['scheduler_status'] = 'エラー（分析失敗）'
-        error_msg = f"❌ *BTC分析レポート生成エラー*\n\nテクニカル分析中にエラーが発生しました。\n詳細: {str(e)}\n最終更新: {last_updated_str}"
+        error_msg = f"❌ *BTC分析レポート生成エラー*\n\nテクニカル分析中にエラーが発生しました。\n詳細: {str(e)}\n最終更新: {last_updated_str} (JST)"
         Thread(target=send_telegram_message, args=(error_msg,)).start()
         return
 
@@ -675,10 +684,10 @@ def update_report_data():
     # 6. レポートの整形 (改行と優勢度の強調)
     price = analysis_result['price']
     P, R1, S1, ma50, rsi = analysis_result['P'], analysis_result['R1'], analysis_result['S1'], analysis_result['MA50'], analysis_result['RSI']
-    R2_long, S2_long = analysis_result['R2_long'], analysis_result['S2_long'] # NEW
-    R1_short, S1_short = analysis_result['R1_short'], analysis_result['S1_short'] # NEW
-    ma200, bbw = analysis_result['MA200'], analysis_result['BBW'] # NEW
-    stoch_k_long, stoch_d_long = analysis_result['StochK_long'], analysis_result['StochD_long'] # NEW
+    R2_long, S2_long = analysis_result['R2_long'], analysis_result['S2_long'] 
+    R1_short, S1_short = analysis_result['R1_short'], analysis_result['S1_short'] 
+    ma200, bbw = analysis_result['MA200'], analysis_result['BBW'] 
+    stoch_k_long, stoch_d_long = analysis_result['StochK_long'], analysis_result['StochD_long'] 
 
     dominance = analysis_result['dominance'] # 優勢度
     strategy = analysis_result['strategy']
@@ -690,14 +699,14 @@ def update_report_data():
     formatted_P = f"`${P:,.2f}`"
     formatted_R1_long = f"`${R1:,.2f}`"
     formatted_S1_long = f"`${S1:,.2f}`"
-    formatted_R2_long = f"`${R2_long:,.2f}`" # NEW
-    formatted_S2_long = f"`${S2_long:,.2f}`" # NEW
-    formatted_R1_short = f"`${R1_short:,.2f}`" # NEW
-    formatted_S1_short = f"`${S1_short:,.2f}`" # NEW
+    formatted_R2_long = f"`${R2_long:,.2f}`"
+    formatted_S2_long = f"`${S2_long:,.2f}`"
+    formatted_R1_short = f"`${R1_short:,.2f}`"
+    formatted_S1_short = f"`${S1_short:,.2f}`"
     formatted_MA50 = f"`${ma50:,.2f}`"
-    formatted_MA200 = f"`${ma200:,.2f}`" # NEW
+    formatted_MA200 = f"`${ma200:,.2f}`"
     formatted_RSI = f"`{rsi:,.2f}`"
-    formatted_BBW = f"`{bbw:,.2f}%`" # NEW
+    formatted_BBW = f"`{bbw:,.2f}%`"
 
     price_analysis = [
         f"💰 *現在価格 (BTC-USD)*: {formatted_current_price}",
@@ -705,15 +714,15 @@ def update_report_data():
         f"💡 *中期トレンド転換点 (MA50)*: {formatted_MA50}",
         f"🐻 *長期トレンド基準 (MA200)*: {formatted_MA200}",
         f"--- 日足 主要レベル (Classic Pivot) ---",
-        f"🔼 R1: {formatted_R1_long}, R2: {formatted_R2_long}", # R2追加
-        f"🔽 S1: {formatted_S1_long}, S2: {formatted_S2_long}", # S2追加
+        f"🔼 R1: {formatted_R1_long}, R2: {formatted_R2_long}",
+        f"🔽 S1: {formatted_S1_long}, S2: {formatted_S2_long}",
         f"--- 4h 短期主要レベル (Fibonacci Pivot) ---",
-        f"⬆️ R1 (4h): {formatted_R1_short}", # 4h R1追加
-        f"⬇️ S1 (4h): {formatted_S1_short}", # 4h S1追加
+        f"⬆️ R1 (4h): {formatted_R1_short}",
+        f"⬇️ S1 (4h): {formatted_S1_short}",
         f"--- 主要オシレーター指標 ---",
         f"🔥 RSI (14期間, 日足): {formatted_RSI}",
-        f"📊 BB幅 (20, 日足): {formatted_BBW}", # BB幅追加
-        f"✨ Stochastics K/D (日足): K=`{stoch_k_long:,.2f}`, D=`{stoch_d_long:,.2f}`", # NEW
+        f"📊 BB幅 (20, 日足): {formatted_BBW}",
+        f"✨ Stochastics K/D (日足): K=`{stoch_k_long:,.2f}`, D=`{stoch_d_long:,.2f}`",
     ]
 
     prediction_lines = [f"• {tf}後予測: *{predictions[tf]}*" for tf in ["1h", "4h", "12h", "24h"]]
@@ -721,7 +730,8 @@ def update_report_data():
     # 改行を多く入れ、セクションを明確に分離
     report_message = (
         f"👑 *BTC実践分析レポート (テクニカルBOT)* 👑\n\n"
-        f"📅 *最終データ更新*: `{last_updated_str}`\n"
+        f"📅 *最終データ更新*: `{last_updated_str}` (JST)\n"
+        f"⏱️ *次回の通知予定*: `{next_run_time_str}` (JST)\n" # JSTベースの次回通知予定時刻
         f"📊 *処理データ件数*: *{len(df_long)}* 件 ({LONG_INTERVAL}足) + *{len(df_short)}* 件 ({SHORT_INTERVAL}足)\n\n" 
         
         # --- 市場優勢度の強調 ---
@@ -785,9 +795,9 @@ def update_report_data():
         
         photo_caption = (
             f"📈 *BTC実践分析チャート ({LONG_INTERVAL}足)* 📉\n"
-            f"📅 更新: `{last_updated_str}`\n"
+            f"📅 更新: `{last_updated_str}` (JST)\n" # JSTの更新時刻
             f"💰 現在価格: {formatted_current_price}\n"
-            f"🚨 *優勢度*: *{dominance}*\n" # 優勢度を画像キャプションにも追加
+            f"🚨 *優勢度*: *{dominance}*\n"
             f"🛡️ *推奨戦略*: {strategy}\n"
             f"_詳細は別途送信されるテキストレポートをご確認ください。_"
         )
@@ -797,13 +807,13 @@ def update_report_data():
             Thread(target=send_telegram_photo, args=(chart_buffer, photo_caption)).start()
         else:
              logging.error("❌ チャート画像のバッファが空です。画像送信をスキップしました。")
-             error_caption = f"⚠️ *チャート生成失敗*\n\nデータは正常に処理されましたが、チャート画像生成中にエラーが発生しました。\n最終更新: {last_updated_str}"
+             error_caption = f"⚠️ *チャート生成失敗*\n\nデータは正常に処理されましたが、チャート画像生成中にエラーが発生しました。\n最終更新: {last_updated_str} (JST)"
              Thread(target=send_telegram_message, args=(error_caption,)).start()
 
 
     except Exception as e:
         logging.error(f"❌ チャート画像の生成または送信に失敗しました: {e}", exc_info=True)
-        error_caption = f"⚠️ *チャート生成失敗*\n\nデータは正常に処理されましたが、チャート画像生成中に予期せぬエラーが発生しました。\nエラー詳細: {str(e)[:100]}...\n最終更新: {last_updated_str}"
+        error_caption = f"⚠️ *チャート生成失敗*\n\nデータは正常に処理されましたが、チャート画像生成中に予期せぬエラーが発生しました。\nエラー詳細: {str(e)[:100]}...\n最終更新: {last_updated_str} (JST)"
         Thread(target=send_telegram_message, args=(error_caption,)).start()
 
 
