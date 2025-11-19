@@ -165,25 +165,35 @@ def fetch_btc_ohlcv_data(period: str, interval: str) -> pd.DataFrame:
                 logging.error("❌ 最大リトライ回数に達しました。データ取得を中止し、空のDataFrameを返します。")
                 return pd.DataFrame() # 空のDataFrameを返して呼び出し元で処理させる
 
-# === リアルタイム価格取得関数 ===
+# === リアルタイム価格取得関数 (リトライ機能付き) ===
 def fetch_current_price() -> float:
     """
-    yfinanceからBTC-USDの最新の価格をリアルタイムで取得します。
+    yfinanceからBTC-USDの最新の価格をリアルタイムで取得します（リトライ付き）。
     """
-    try:
-        # 1分足の最新のデータを取得
-        df = yf.download(TICKER, period="1m", interval="1m", progress=False, auto_adjust=True)
-        if not df.empty and 'Close' in df.columns:
-            # 最新のClose価格を返す
-            current_price = df['Close'].iloc[-1]
-            logging.info(f"✅ リアルタイム価格取得成功: ${current_price:,.2f}")
-            return current_price
-        else:
-            logging.warning("⚠️ リアルタイム価格データ取得失敗: データが空または'Close'カラムがありません。")
-            return 0.0
-    except Exception as e:
-        logging.error(f"❌ リアルタイム価格取得中にエラーが発生しました: {e}", exc_info=True)
-        return 0.0
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            logging.info(f"リアルタイム価格取得中... (試行 {attempt + 1}/{max_retries})")
+            # 1分足の最新のデータを取得
+            df = yf.download(TICKER, period="1m", interval="1m", progress=False, auto_adjust=True, timeout=5)
+            
+            if not df.empty and 'Close' in df.columns and len(df) > 0:
+                # 最新のClose価格を返す
+                current_price = df['Close'].iloc[-1]
+                logging.info(f"✅ リアルタイム価格取得成功: ${current_price:,.2f}")
+                return current_price
+            else:
+                raise ValueError("取得したデータが空または不十分です。")
+
+        except Exception as e:
+            logging.warning(f"⚠️ リアルタイム価格取得失敗 (試行 {attempt + 1}/{max_retries}): {e}")
+            if attempt < max_retries - 1:
+                wait_time = 2 ** attempt * 2 + random.uniform(0, 1) # 2, 4秒待機 (ランダムジッター追加)
+                time.sleep(wait_time)
+                continue
+            else:
+                logging.error("❌ リアルタイム価格取得の最大リトライ回数に達しました。0.0を返します。")
+                return 0.0
 # =======================================
 
 def analyze_data(df: pd.DataFrame) -> pd.DataFrame:
@@ -597,7 +607,7 @@ def update_report_data():
     
     # 2. データ取得 (日足と4時間足)
     # 【リアルタイム価格の取得】
-    realtime_price = fetch_current_price()
+    realtime_price = fetch_current_price() # <-- リトライ機能付き
 
     df_long = fetch_btc_ohlcv_data(LONG_PERIOD, LONG_INTERVAL)
     df_short = fetch_btc_ohlcv_data(SHORT_PERIOD, SHORT_INTERVAL)
@@ -655,7 +665,7 @@ def update_report_data():
     # 5. 戦略と予測の生成
     analysis_result = generate_strategy(df_long_analyzed, df_short_analyzed)
 
-    # **【修正点】リアルタイム価格の適用とソースの決定**
+    # **リアルタイム価格の適用とソースの決定**
     price_source = "OHLCV 終値 (最新の足)"
     if realtime_price > 0:
         analysis_result['price'] = realtime_price # リアルタイム価格で上書き
