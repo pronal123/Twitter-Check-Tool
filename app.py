@@ -60,8 +60,8 @@ scheduler = APScheduler()
 TICKER = "BTC-USD"
 LONG_PERIOD = "1y" # 日足（1d）分析用 - バックテストのため1年間
 LONG_INTERVAL = "1d"
-SHORT_PERIOD = "30d" # 4時間足（4h）分析用 - 短期戦略
-SHORT_INTERVAL = "4h"
+SHORT_PERIOD = "7d" # 1時間足（1h）分析用 - 短期戦略
+SHORT_INTERVAL = "1h" # <-- 1時間足に戻しました
 BACKTEST_CAPITAL = 100000 # バックテストの初期資本
 # ===============================================
 
@@ -165,29 +165,33 @@ def fetch_btc_ohlcv_data(period: str, interval: str) -> pd.DataFrame:
                 logging.error("❌ 最大リトライ回数に達しました。データ取得を中止し、空のDataFrameを返します。")
                 return pd.DataFrame() # 空のDataFrameを返して呼び出し元で処理させる
 
-# === リアルタイム価格取得関数 (4時間足終値を使用) ===
+# === リアルタイム価格取得関数 (1時間足終値を使用) ===
 def fetch_current_price() -> float:
     """
     yfinanceからBTC-USDの最新の価格をリアルタイムで取得します（リトライ付き）。
-    安定性を高めるため、4時間足の最新の完成した終値を使用します。
+    安定性を高めるため、1時間足の最新の完成した終値を使用します。
     """
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            # --- 変更点1: ログメッセージを '4h終値' に更新 ---
-            logging.info(f"リアルタイム価格取得中 (4h終値を使用)... (試行 {attempt + 1}/{max_retries})")
+            # --- 変更点1: ログメッセージを '1h終値' に更新 ---
+            logging.info(f"リアルタイム価格取得中 (1h終値を使用)... (試行 {attempt + 1}/{max_retries})")
             
-            # --- 変更点2: intervalを "4h" に変更 ---
-            df = yf.download(TICKER, period="7d", interval="4h", progress=False, auto_adjust=True, timeout=5)
+            # --- 変更点2: intervalを "1h" に変更 ---
+            df = yf.download(TICKER, period="7d", interval="1h", progress=False, auto_adjust=True, timeout=5)
             
             if not df.empty and 'Close' in df.columns and len(df) > 0:
                 current_price = df['Close'].iloc[-1]
                 
-                # --- 変更点3: float型に明示的に変換 (Series.__format__エラー対策) ---
-                current_price_float = float(current_price) 
+                # --- FutureWarning/Series.__format__エラー対策 (最終修正) ---
+                # Seriesとして返される場合のFutureWarningを回避するため、明示的にスカラー値を取得
+                if isinstance(current_price, pd.Series):
+                    current_price_float = float(current_price.iloc[0])
+                else:
+                    current_price_float = float(current_price)
                 
-                # --- 変更点4: ログメッセージを '4h終値' に更新 ---
-                logging.info(f"✅ リアルタイム価格取得成功: ${current_price_float:,.2f} (4h終値)")
+                # --- 変更点3: ログメッセージを '1h終値' に更新 ---
+                logging.info(f"✅ リアルタイム価格取得成功: ${current_price_float:,.2f} (1h終値)")
                 return current_price_float
             else:
                 raise ValueError("取得したデータが空または不十分です。")
@@ -232,7 +236,7 @@ def calculate_pivot_levels(df: pd.DataFrame, pivot_type: str = 'Classic') -> tup
         # データが不十分な場合は0を返す
         return 0, 0, 0, 0, 0
 
-    # 最新の完成した足 (前日/前の4時間足) のデータを使用
+    # 最新の完成した足 (前日/前の1時間足) のデータを使用
     prev = df.iloc[-2]
     H, L, C = prev['High'], prev['Low'], prev['Close']
 
@@ -359,7 +363,7 @@ def backtest_strategy(df: pd.DataFrame, initial_capital: float = BACKTEST_CAPITA
 # === 戦略生成ロジック ===
 def generate_strategy(df_long: pd.DataFrame, df_short: pd.DataFrame) -> dict:
     """
-    日足と4時間足のテクニカル指標に基づいて、総合的な戦略と予測、市場の優勢度を決定します。
+    日足と1時間足のテクニカル指標に基づいて、総合的な戦略と予測、市場の優勢度を決定します。
     """
     df_long_clean = df_long.dropna()
     df_short_clean = df_short.dropna()
@@ -386,7 +390,7 @@ def generate_strategy(df_long: pd.DataFrame, df_short: pd.DataFrame) -> dict:
     # ピボットポイントの計算 (日足データでクラシックピボットを使用)
     P_long, R1_long, S1_long, _, _ = calculate_pivot_levels(df_long, 'Classic')
 
-    # 短期（4時間足）の分析
+    # 短期（1時間足）の分析
     latest_short = df_short_clean.iloc[-1]
     _, R1_short, S1_short, _, _ = calculate_pivot_levels(df_short, 'Classic')
     short_ma50 = latest_short['SMA_50']
@@ -467,12 +471,12 @@ def generate_strategy(df_long: pd.DataFrame, df_short: pd.DataFrame) -> dict:
 
     if dominance in ["明確なロング優勢 🚀", "ロング優勢 📈"]:
         if latest_short['Close'] > short_ma50: # 短期も上向き
-            strategy = f"🌟 *最強のロング戦略*。日足S1 ({S1_long_str}) または4h S1 ({S1_short_str}) への*押し目買い*を積極的に検討。"
+            strategy = f"🌟 *最強のロング戦略*。日足S1 ({S1_long_str}) または1h S1 ({S1_short_str}) への*押し目買い*を積極的に検討。"
         else:
             strategy = f"ロング優勢の押し目買い戦略。日足P ({P_long_str}) への短期的な反落時が主な買い場。"
     elif dominance in ["明確なショート優勢 💥", "ショート優勢 📉"]:
         if latest_short['Close'] < short_ma50: # 短期も下向き
-            strategy = f"💥 *最強のショート戦略*。日足R1 ({R1_long_str}) または4h R1 ({R1_short_str}) への*戻り売り*を積極的に検討。"
+            strategy = f"💥 *最強のショート戦略*。日足R1 ({R1_long_str}) または1h R1 ({R1_short_str}) への*戻り売り*を積極的に検討。"
         else:
             strategy = f"ショート優勢の戻り売り戦略。日足P ({P_long_str}) への短期的な上昇時が主な売り場。"
     elif dominance == "中立/レンジ ↔️":
@@ -486,9 +490,9 @@ def generate_strategy(df_long: pd.DataFrame, df_short: pd.DataFrame) -> dict:
 
     # --- 短期予測の強化 ---
     predictions = {
-        # 1hは短期モメンタム(4h MACD)
+        # 1hは短期モメンタム(1h MACD)
         "1h": "強い上昇 🚀" if latest_short['MACDh_12_26_9'] > 0 and latest_short['Close'] > short_ma50 else "強い下降 📉" if latest_short['MACDh_12_26_9'] < 0 and latest_short['Close'] < short_ma50 else "レンジ ↔️",
-        # 4hは短期トレンド(4h MA50)
+        # 4hは短期トレンド(1h MA50)
         "4h": "上昇 📈" if latest_short['Close'] > short_ma50 else "下降 📉",
         # 12hは日足のピボットPに対する位置
         "12h": "上昇 📈" if latest['Close'] > P_long else "下降 📉",
@@ -612,12 +616,13 @@ def update_report_data():
 
     logging.info("スケジュールされたレポート更新タスク開始（実践分析モード）...")
     
-    # 2. データ取得 (日足と4時間足)
-    # 【リアルタイム価格の取得】 (修正済み: 4時間足の最新終値を使用)
+    # 2. データ取得 (日足と1時間足)
+    # 【リアルタイム価格の取得】 (修正済み: 1時間足の最新終値を使用)
     realtime_price = fetch_current_price() 
 
     df_long = fetch_btc_ohlcv_data(LONG_PERIOD, LONG_INTERVAL)
-    df_short = fetch_btc_ohlcv_data(SHORT_PERIOD, SHORT_INTERVAL)
+    # SHORT_PERIODも1時間足に合わせて7dに変更
+    df_short = fetch_btc_ohlcv_data(SHORT_PERIOD, SHORT_INTERVAL) 
 
     # データが空の場合の処理
     if df_long.empty or df_short.empty:
@@ -675,9 +680,9 @@ def update_report_data():
     # **リアルタイム価格の適用とソースの決定** (修正済み)
     price_source = "OHLCV 終値 (最新の足)"
     if realtime_price > 0:
-        analysis_result['price'] = realtime_price # リアルタイム価格（今回は4h終値）で上書き
-        # --- 変更点5: ソース情報を '4h終値' に変更 ---
-        price_source = "リアルタイム単価 (4h終値)" 
+        analysis_result['price'] = realtime_price # リアルタイム価格（今回は1h終値）で上書き
+        # --- 変更点4: ソース情報を '1h終値' に変更 ---
+        price_source = "リアルタイム単価 (1h終値)" 
     else:
         # リアルタイム価格取得が失敗した場合、df_longの終値をフォールバックとして使用
         if 'Close' in df_long.columns and not df_long.empty:
