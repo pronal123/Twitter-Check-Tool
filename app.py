@@ -65,7 +65,6 @@ LONG_INTERVAL = "1d"
 SHORT_PERIOD = "30d" # 4時間足（4h）分析用 - 短期戦略
 SHORT_INTERVAL = "4h"
 BACKTEST_CAPITAL = 100000 # バックテストの初期資本
-NEXT_RUN_HOURS = 6 # 次回通知までの時間 (Schedulerの設定と一致させる)
 # ===============================================
 
 # グローバル状態（ダッシュボード表示用）
@@ -92,6 +91,8 @@ def send_telegram_message(message):
         return
     try:
         # Markdownを使用 (V2ではないため、\n\nでセクション区切りを確実にする)
+        # 注意: Pythonの文字列内で '\n' を使用しても、f-string内でのエスケープを考慮する必要があります。
+        # 以前の修正で '\n' (単一バックスラッシュ) を使用していたため、そのまま維持します。
         response = requests.post(
             TELEGRAM_API_URL_MESSAGE,
             data={'chat_id': TELEGRAM_CHAT_ID, 'text': message, 'parse_mode': 'Markdown'},
@@ -575,13 +576,6 @@ def update_report_data():
     now = datetime.datetime.now()
     last_updated_str = now.strftime('%Y-%m-%d %H:%M:%S')
 
-    # --- 次回通知時間の計算 ---
-    # NEXT_RUN_HOURS = 6時間 (グローバル定数を使用)
-    next_run_time = now + datetime.timedelta(hours=NEXT_RUN_HOURS)
-    # タイムゾーン情報がないため、JSTであることを仮定してメッセージに含める
-    next_run_str = next_run_time.strftime('%Y-%m-%d %H:%M:%S JST') 
-    # --------------------------
-
     # 1. データ取得 (日足と4時間足)
     df_long = fetch_btc_ohlcv_data(LONG_PERIOD, LONG_INTERVAL)
     df_short = fetch_btc_ohlcv_data(SHORT_PERIOD, SHORT_INTERVAL)
@@ -646,7 +640,6 @@ def update_report_data():
     formatted_MA50 = f"`${ma50:,.2f}`"
     formatted_RSI = f"`{rsi:,.2f}`"
 
-    # --- Markdown整形を強化 ---
     price_analysis = [
         f"💰 *現在価格 (BTC-USD)*: {formatted_current_price}",
         f"🟡 *ピボットポイント (P, 日足)*: {formatted_P}",
@@ -658,28 +651,25 @@ def update_report_data():
 
     prediction_lines = [f"• {tf}後予測: *{predictions[tf]}*" for tf in ["1h", "4h", "12h", "24h"]]
 
+    # 改行を多く入れ、セクションを明確に分離
+    # 重要: Pythonのf-string内で '\n' を使用して改行を生成しています。
     report_message = (
         f"👑 *BTC実践分析レポート (テクニカルBOT)* 👑\n\n"
-        
         f"📅 *最終データ更新*: `{last_updated_str}`\n"
-        f"⏰ *次回通知予定*: *`{next_run_str}`* (約 {NEXT_RUN_HOURS}時間後)\n"
-        f"📊 *処理データ件数*: *{len(df_long)}* 件 ({LONG_INTERVAL}足) + *{len(df_short)}* 件 ({SHORT_INTERVAL}足)\n\n" 
+        f"📊 *処理データ件数*: *{len(df_long)}* 件 ({LONG_INTERVAL}足) + *{len(df_short)}* 件 ({SHORT_INTERVAL}足)\n\n"
         
         # --- 市場優勢度の強調 ---
         f"**🚀 市場の優勢 (Dominance) 🚀**\n"
         f"🚨 *総合優勢度*: *{dominance}*\n\n"
         
         f"--- *主要価格帯と指標 (USD)* ---\n"
-        # FIX: リストを単一改行文字 ('\n') で結合
-        f"{'\n'.join(price_analysis)}\n\n" 
+        f"{'\n'.join(price_analysis)}\n\n" # \nでアイテム間を改行
         
         f"--- *動向の詳細分析と根拠* ---\n"
-        # FIX: リストを単一改行文字 ('\n') で結合
-        f"{'\n'.join(details)}\n\n" 
+        f"{'\n'.join(details)}\n\n" # \nで箇条書き間を改行
         
         f"--- *短期動向と予測* ---\n"
-        # FIX: リストを単一改行文字 ('\n') で結合
-        f"{'\n'.join(prediction_lines)}\n\n"
+        f"{'\n'.join(prediction_lines)}\n\n" # \nで予測間を改行
         
         f"--- *総合戦略サマリー* ---\n"
         f"🛡️ *推奨戦略*: *{strategy}*\n\n"
@@ -690,18 +680,17 @@ def update_report_data():
         backtest_lines = [f"⚠️ *バックテスト結果*: {backtest_results['error']}"]
     else:
         backtest_lines = [
-            f"--- *戦略バックテスト結果 ({LONG_PERIOD} / {LONG_INTERVAL}足)* ---",
+            f"--- *バックテスト結果 ({LONG_PERIOD} / {LONG_INTERVAL}足)* ---",
             f"💰 *最終資本*: `\$ {backtest_results['final_capital']:,.2f}` (初期: `\$ {BACKTEST_CAPITAL:,.2f}`)",
             f"📈 *総リターン率*: *{backtest_results['total_return']}%*",
             f"🏆 *プロフィットファクター*: `{backtest_results['profit_factor']}` (1.0以上が望ましい)",
             f"📉 *最大ドローダウン (DD)*: `{backtest_results['max_drawdown']}%` (リスク指標)",
-            f"📊 *取引実績*: `{backtest_results['trades']}` 回の取引 (勝率: `{backtest_results['win_rate']}%`)"
+            f"📊 *取引回数*: `{backtest_results['trades']}` (勝率: `{backtest_results['win_rate']}%`)"
         ]
 
     report_message += (
         f"{chr(8212) * 20}\n" # 区切り線
-        # FIX: リストを単一改行文字 ('\n') で結合
-        f"{'\n'.join(backtest_lines)}\n\n" 
+        f"{'\n'.join(backtest_lines)}\n\n"
         f"_※ この分析は、実戦的なマルチタイムフレーム分析に基づきますが、投資助言ではありません。_"
     )
 
@@ -769,7 +758,7 @@ if not scheduler.running:
 
     # 6時間ごとにupdate_report_dataを実行
     scheduler.add_job(id='report_update_job', func=update_report_data,
-                      trigger='interval', hours=NEXT_RUN_HOURS, replace_existing=True) # 定義した定数を使用
+                      trigger='interval', hours=6, replace_existing=True)
 
     scheduler.start()
     logging.info("✅ スケジューラーを開始しました。")
