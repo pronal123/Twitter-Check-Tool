@@ -46,7 +46,8 @@ TELEGRAM_API_URL_PHOTO = f'{TELEGRAM_API_BASE_URL}/sendPhoto'
 # -----------------
 # ロギング設定
 # -----------------
-logging.basicConfig(level=logging.logging.INFO, # ERRORやWARNINGだけでなくINFOも出力
+# 【ここを修正しました】: logging.INFO は正しいですが、logging.logging.INFO は誤りです。
+logging.basicConfig(level=logging.INFO, # ERRORやWARNINGだけでなくINFOも出力
                     format='[%(asctime)s] %(levelname)s: %(message)s',
                     datefmt='%Y-%m-%d %H:%M:%S')
 
@@ -486,6 +487,11 @@ def generate_chart_image(df: pd.DataFrame, analysis_result: dict) -> io.BytesIO:
     # NaN値が多く、描画ができない可能性を考慮してNaNを含む行をドロップ
     df_plot = df.dropna(subset=['Close', 'SMA_50', 'SMA_200']).copy() 
     
+    # ボリンジャーバンドがデータに存在しない可能性に対応するため、リストから削除
+    if BBU_COL not in df_plot.columns: required_cols.remove(BBU_COL)
+    if BBL_COL not in df_plot.columns: required_cols.remove(BBL_COL)
+    
+    # 最終的なチェック
     if not all(col in df_plot.columns for col in required_cols):
         logging.error(f"チャート描画に必要なカラムの一部が不足しています。利用可能なカラム: {df_plot.columns.tolist()}")
         return io.BytesIO()
@@ -505,9 +511,10 @@ def generate_chart_image(df: pd.DataFrame, analysis_result: dict) -> io.BytesIO:
     ax.plot(df_plot.index, df_plot['SMA_50'], label='SMA 50 (中期)', color='#fbbf24', linestyle='-', linewidth=2, alpha=0.8) 
     ax.plot(df_plot.index, df_plot['SMA_200'], label='SMA 200 (長期)', color='#ef4444', linestyle='--', linewidth=1.5, alpha=0.9)
 
-    # ボリンジャーバンド
-    ax.plot(df_plot.index, df_plot[BBU_COL], label='BB Upper (+2σ)', color='#ef4444', linestyle=':', linewidth=1)
-    ax.plot(df_plot.index, df_plot[BBL_COL], label='BB Lower (-2σ)', color='#3b82f6', linestyle=':', linewidth=1)
+    # ボリンジャーバンド (カラムが存在する場合のみ描画)
+    if BBU_COL in df_plot.columns and BBL_COL in df_plot.columns:
+        ax.plot(df_plot.index, df_plot[BBU_COL], label='BB Upper (+2σ)', color='#ef4444', linestyle=':', linewidth=1)
+        ax.plot(df_plot.index, df_plot[BBL_COL], label='BB Lower (-2σ)', color='#3b82f6', linestyle=':', linewidth=1)
 
     # --- 3. 最新の主要レベルの描画 ---
     price = analysis_result['price']
@@ -682,9 +689,11 @@ def update_report_data():
     if 'error' in backtest_results:
         backtest_lines = [f"⚠️ *バックテスト結果*: {backtest_results['error']}"]
     else:
+        # 【SyntaxWarning対応】: f-string内でのエスケープシーケンス '\$' は不要です。
+        # Markdownのインラインコード (`) 内であれば、そのまま $ を使えます。
         backtest_lines = [
             f"--- *バックテスト結果 ({LONG_PERIOD} / {LONG_INTERVAL}足)* ---",
-            f"💰 *最終資本*: `\$ {backtest_results['final_capital']:,.2f}` (初期: `\$ {BACKTEST_CAPITAL:,.2f}`)",
+            f"💰 *最終資本*: `${backtest_results['final_capital']:,.2f}` (初期: `${BACKTEST_CAPITAL:,.2f}`)",
             f"📈 *総リターン率*: *{backtest_results['total_return']}%*",
             f"🏆 *プロフィットファクター*: `{backtest_results['profit_factor']}` (1.0以上が望ましい)",
             f"📉 *最大ドローダウン (DD)*: `{backtest_results['max_drawdown']}%` (リスク指標)",
@@ -738,6 +747,7 @@ def update_report_data():
 @app.route('/')
 def index():
     """ダッシュボードの表示"""
+    # テンプレートにglobal_dataを渡すことで、初回表示時に初期値を埋め込む
     return render_template('index.html', title='BTC実践テクニカル分析 BOT ダッシュボード', data=global_data)
 
 @app.route('/status')
