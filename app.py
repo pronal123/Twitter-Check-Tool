@@ -165,24 +165,30 @@ def fetch_btc_ohlcv_data(period: str, interval: str) -> pd.DataFrame:
                 logging.error("❌ 最大リトライ回数に達しました。データ取得を中止し、空のDataFrameを返します。")
                 return pd.DataFrame() # 空のDataFrameを返して呼び出し元で処理させる
 
-# === リアルタイム価格取得関数 (1時間足終値を使用) ===
+# === リアルタイム価格取得関数 (4時間足終値を使用) ===
 def fetch_current_price() -> float:
     """
     yfinanceからBTC-USDの最新の価格をリアルタイムで取得します（リトライ付き）。
-    安定性を高めるため、1時間足の最新の完成した終値を使用します。
+    安定性を高めるため、4時間足の最新の完成した終値を使用します。
     """
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            logging.info(f"リアルタイム価格取得中 (1h終値を使用)... (試行 {attempt + 1}/{max_retries})")
-            # 1時間足の最新のデータを取得 (期間を7日間に延長して確実にデータを取得)
-            df = yf.download(TICKER, period="7d", interval="1h", progress=False, auto_adjust=True, timeout=5)
+            # --- 変更点1: ログメッセージを '4h終値' に更新 ---
+            logging.info(f"リアルタイム価格取得中 (4h終値を使用)... (試行 {attempt + 1}/{max_retries})")
+            
+            # --- 変更点2: intervalを "4h" に変更 ---
+            df = yf.download(TICKER, period="7d", interval="4h", progress=False, auto_adjust=True, timeout=5)
             
             if not df.empty and 'Close' in df.columns and len(df) > 0:
-                # 最新のClose価格を返す
                 current_price = df['Close'].iloc[-1]
-                logging.info(f"✅ リアルタイム価格取得成功: ${current_price:,.2f} (1h終値)")
-                return current_price
+                
+                # --- 変更点3: float型に明示的に変換 (Series.__format__エラー対策) ---
+                current_price_float = float(current_price) 
+                
+                # --- 変更点4: ログメッセージを '4h終値' に更新 ---
+                logging.info(f"✅ リアルタイム価格取得成功: ${current_price_float:,.2f} (4h終値)")
+                return current_price_float
             else:
                 raise ValueError("取得したデータが空または不十分です。")
 
@@ -607,7 +613,7 @@ def update_report_data():
     logging.info("スケジュールされたレポート更新タスク開始（実践分析モード）...")
     
     # 2. データ取得 (日足と4時間足)
-    # 【リアルタイム価格の取得】 (修正済み: 1時間足の最新終値を使用)
+    # 【リアルタイム価格の取得】 (修正済み: 4時間足の最新終値を使用)
     realtime_price = fetch_current_price() 
 
     df_long = fetch_btc_ohlcv_data(LONG_PERIOD, LONG_INTERVAL)
@@ -669,8 +675,9 @@ def update_report_data():
     # **リアルタイム価格の適用とソースの決定** (修正済み)
     price_source = "OHLCV 終値 (最新の足)"
     if realtime_price > 0:
-        analysis_result['price'] = realtime_price # リアルタイム価格（今回は1h終値）で上書き
-        price_source = "リアルタイム単価 (1h終値)" # <-- ソース情報を変更
+        analysis_result['price'] = realtime_price # リアルタイム価格（今回は4h終値）で上書き
+        # --- 変更点5: ソース情報を '4h終値' に変更 ---
+        price_source = "リアルタイム単価 (4h終値)" 
     else:
         # リアルタイム価格取得が失敗した場合、df_longの終値をフォールバックとして使用
         if 'Close' in df_long.columns and not df_long.empty:
