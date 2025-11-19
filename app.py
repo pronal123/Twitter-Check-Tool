@@ -18,8 +18,12 @@ import yfinance as yf
 import pandas_ta as ta
 import numpy as np 
 
+# Flask関連のインポート
+from flask import Flask, render_template, jsonify
+from flask_apscheduler import APScheduler
+
 # -----------------
-# Matplotlib 日本語フォント設定 (前回修正済み)
+# Matplotlib 日本語フォント設定
 # -----------------
 try:
     plt.rcParams['font.family'] = 'sans-serif'
@@ -28,12 +32,8 @@ try:
 except Exception as e:
     logging.warning(f"日本語フォント設定に失敗しました: {e}. 英語フォントで続行します。")
 
-# Flask関連のインポート
-from flask import Flask, render_template, jsonify
-from flask_apscheduler import APScheduler
-
 # -----------------
-# Telegram Bot設定 (前回修正済み)
+# Telegram Bot設定
 # -----------------
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', 'YOUR_BOT_TOKEN_HERE')
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '5890119671')
@@ -44,14 +44,14 @@ TELEGRAM_API_URL_PHOTO = f'{TELEGRAM_API_BASE_URL}/sendPhoto'
 
 
 # -----------------
-# ロギング設定 (前回修正済み)
+# ロギング設定
 # -----------------
-logging.basicConfig(level=logging.INFO,
+logging.basicConfig(level=logging.logging.INFO, # ERRORやWARNINGだけでなくINFOも出力
                     format='[%(asctime)s] %(levelname)s: %(message)s',
                     datefmt='%Y-%m-%d %H:%M:%S')
 
 # -----------------
-# アプリケーション初期化 (前回修正済み)
+# アプリケーション初期化
 # -----------------
 app = Flask(__name__, template_folder='.')
 scheduler = APScheduler()
@@ -80,7 +80,7 @@ global_data = {
 }
 
 # -----------------
-# Telegram 通知ヘルパー関数 (前回修正済み)
+# Telegram 通知ヘルパー関数
 # -----------------
 def send_telegram_message(message):
     """Telegramにテキストメッセージを送信します。"""
@@ -122,7 +122,7 @@ def send_telegram_photo(photo_buffer: io.BytesIO, caption: str):
     except requests.exceptions.RequestException as req_err:
         logging.error(f"❌ Telegram Photo API接続エラーが発生しました: {req_err}")
     except Exception as e:
-        logging.error(f"❌ Telegramチャート画像の送信中に予期せぬエラーが発生しました: {e}")
+        logging.error(f"❌ Telegramチャート画像の送信中に予期せぬエラーが発生しました: {e}", exc_info=True)
 
 
 # -----------------
@@ -131,7 +131,7 @@ def send_telegram_photo(photo_buffer: io.BytesIO, caption: str):
 
 def fetch_btc_ohlcv_data(period: str, interval: str) -> pd.DataFrame:
     """
-    yfinanceからOHLCVデータを取得します。
+    yfinanceからOHLCVデータを取得します。エラー発生時に詳細なトレースバックを出力するように強化。
     """
     max_retries = 3
 
@@ -139,10 +139,10 @@ def fetch_btc_ohlcv_data(period: str, interval: str) -> pd.DataFrame:
         try:
             logging.info(f"yfinanceから{TICKER}の過去データ（{period}, {interval}）を取得中... (試行 {attempt + 1}/{max_retries})")
 
-            # yfinanceのFutureWarningを抑制するためにauto_adjustを明示的にTrueに設定
+            # ネットワーク接続の問題でハングアップすることが最も多い場所
             df = yf.download(TICKER, period=period, interval=interval, progress=False, auto_adjust=True)
 
-            if df.empty or 'Close' not in df.columns or len(df) < 5: # データが少ない場合もエラーとする
+            if df.empty or 'Close' not in df.columns or len(df) < 5: 
                 raise ValueError("取得したデータが空または不十分です。レート制限の可能性があります。")
 
             # MultiIndexフラット化
@@ -156,15 +156,17 @@ def fetch_btc_ohlcv_data(period: str, interval: str) -> pd.DataFrame:
             return df
 
         except Exception as e:
-            logging.error(f"❌ yfinanceからデータ取得中にエラーが発生しました: {e}")
+            # exc_info=True を追加することで、エラー発生時の詳細なスタックトレースをログに出力します (最重要)
+            logging.error(f"❌ yfinanceからデータ取得中に致命的なエラーが発生しました: {e}", exc_info=True) 
             if attempt < max_retries - 1:
                 wait_time = 2 ** attempt * 5 + random.randint(1, 5)
-                logging.warning(f"⚠️ リトライします (試行 {attempt + 2}/{max_retries})")
+                logging.warning(f"⚠️ リトライします (試行 {attempt + 2}/{max_retries})。 {wait_time}秒待機。")
                 time.sleep(wait_time)
                 continue
             else:
-                logging.error("❌ 最大リトライ回数に達しました。データ取得を中止します。")
+                logging.error("❌ 最大リトライ回数に達しました。データ取得を中止し、空のDataFrameを返します。")
                 return pd.DataFrame() # 空のDataFrameを返して呼び出し元で処理させる
+
 
 def analyze_data(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -185,13 +187,14 @@ def analyze_data(df: pd.DataFrame) -> pd.DataFrame:
     logging.info("✅ テクニカル指標の計算完了。")
     return df
 
-# === ピボットポイントの計算関数を強化 (前回修正済み) ===
+# === ピボットポイントの計算関数を強化 ===
 def calculate_pivot_levels(df: pd.DataFrame, pivot_type: str = 'Classic') -> tuple[float, float, float, float, float]:
     """
     前日のOHLCデータから指定されたタイプのピボットポイントを算出します。
     返り値: P, R1, S1, R2, S2 (全て丸められた値)
     """
     if len(df) < 2:
+        # データが不十分な場合は0を返す
         return 0, 0, 0, 0, 0
 
     # 最新の完成した足 (前日/前の4時間足) のデータを使用
@@ -211,7 +214,7 @@ def calculate_pivot_levels(df: pd.DataFrame, pivot_type: str = 'Classic') -> tup
         R1 = P + 0.382 * (H - L)
         S1 = P - 0.382 * (H - L)
         R2 = P + 0.618 * (H - L)
-        S2 = P - (H - L) # S2はR2と対称になるように修正
+        S2 = P - (H - L) 
         
     else: # デフォルトはクラシック
         P, R1, S1, R2, S2 = calculate_pivot_levels(df, 'Classic')
@@ -219,26 +222,25 @@ def calculate_pivot_levels(df: pd.DataFrame, pivot_type: str = 'Classic') -> tup
     return tuple(round(level, 2) for level in [P, R1, S1, R2, S2])
 # ===============================================
 
-# === バックテスト機能のコアロジック (前回修正済み) ===
+# === バックテスト機能のコアロジック ===
 def backtest_strategy(df: pd.DataFrame, initial_capital: float = BACKTEST_CAPITAL) -> dict:
     """
     データフレームに基づき、現在の戦略ロジックをバックテストします。
     """
     df_clean = df.dropna().copy()
-    if df_clean.empty:
+    if df_clean.empty or len(df_clean) < 10:
+        # データ不足時の処理を強化
         return {
             'trades': 0, 'wins': 0, 'win_rate': 0.0, 'profit_factor': 0.0,
-            'max_drawdown': 0.0, 'total_return': 0.0, 'final_capital': initial_capital
+            'max_drawdown': 0.0, 'total_return': 0.0, 'final_capital': initial_capital,
+            'error': 'バックテストに必要なデータが不足しています。'
         }
-    
-    # ... (バックテストロジックは前回修正から変更なし) ...
-    # バックテストロジックは長いため省略しますが、前回提供されたコードのままで問題ありません。
     
     MA_COL = 'SMA_50'
     RSI_COL = 'RSI_14'
     
     capital = initial_capital
-    position = 0.0 # ポジションサイズ
+    position = 0.0 # ポジションサイズ (プラス: ロング, マイナス: ショート)
     entry_price = 0.0
     trades = []
     
@@ -250,6 +252,7 @@ def backtest_strategy(df: pd.DataFrame, initial_capital: float = BACKTEST_CAPITA
         
         # --- 既にポジションを持っている場合 (エグジット条件) ---
         if position > 0: # 買いポジション (ロング) の場合
+            # 損切り: MA50の0.5%下を下回った場合、または利益確定: RSIが買われすぎ水準 (75) に達した場合
             if close < current_data[MA_COL] * 0.995 or current_data[RSI_COL] > 75: 
                 profit = (close - entry_price) * position
                 capital += profit
@@ -257,6 +260,7 @@ def backtest_strategy(df: pd.DataFrame, initial_capital: float = BACKTEST_CAPITA
                 position = 0.0
         
         elif position < 0: # 売りポジション (ショート) の場合
+            # 損切り: MA50の0.5%上を上回った場合、または利益確定: RSIが売られすぎ水準 (25) に達した場合
             if close > current_data[MA_COL] * 1.005 or current_data[RSI_COL] < 25:
                 profit = (entry_price - close) * abs(position)
                 capital += profit
@@ -267,18 +271,17 @@ def backtest_strategy(df: pd.DataFrame, initial_capital: float = BACKTEST_CAPITA
         if position == 0:
             # 買いシグナル: 終値がMA50を上回り、かつRSIが買われすぎ水準ではない
             if close > current_data[MA_COL] * 1.005 and current_data[RSI_COL] < 70:
-                position = capital * 0.5 / close 
+                position = capital * 0.5 / close # 資本の50%をポジションに割り当てる
                 entry_price = close
             
             # 売りシグナル: 終値がMA50を下回り、かつRSIが売られすぎ水準ではない
             elif close < current_data[MA_COL] * 0.995 and current_data[RSI_COL] > 30:
-                position = - (capital * 0.5 / close)
+                position = - (capital * 0.5 / close) # ショートポジション
                 entry_price = close
         
         # 各足での資本状況を記録 (未決済ポジションの含み益/含み損を考慮)
         current_equity = capital + (close - entry_price) * position if position != 0 else capital
         capital_history.append(current_equity)
-
 
     # --- パフォーマンス指標の計算 ---
     total_trades = len(trades)
@@ -297,6 +300,7 @@ def backtest_strategy(df: pd.DataFrame, initial_capital: float = BACKTEST_CAPITA
     if total_gross_loss > 0:
         profit_factor = total_gross_profit / total_gross_loss
     else:
+        # 損失がない場合は、利益額をPFとして返す（極端な値にならないように）
         profit_factor = total_gross_profit if total_gross_profit > 0 else 0.0
 
     equity = pd.Series(capital_history)
@@ -317,7 +321,7 @@ def backtest_strategy(df: pd.DataFrame, initial_capital: float = BACKTEST_CAPITA
     }
 # ===============================================
 
-# === 戦略生成ロジック (前回修正済み) ===
+# === 戦略生成ロジック ===
 def generate_strategy(df_long: pd.DataFrame, df_short: pd.DataFrame) -> dict:
     """
     日足と4時間足のテクニカル指標に基づいて、総合的な戦略と予測、市場の優勢度を決定します。
@@ -336,7 +340,6 @@ def generate_strategy(df_long: pd.DataFrame, df_short: pd.DataFrame) -> dict:
             'predictions': {'1h': 'N/A', '4h': 'N/A', '12h': 'N/A', '24h': 'N/A'}
         }
 
-    # ... (戦略決定ロジックは前回修正から変更なし) ...
     latest = df_long_clean.iloc[-1]
     
     # 日足の指標値
@@ -391,10 +394,10 @@ def generate_strategy(df_long: pd.DataFrame, df_short: pd.DataFrame) -> dict:
     # --- 3. 過熱感 (RSI) ---
     if rsi > 70:
         details.append(f"• *RSI*: 70 (`{rsi:,.2f}`) を超え、*買われすぎ*を示唆。短期的な調整（利確売り）に警戒。")
-        bear_score += 1 # 買われすぎは短期的な弱気要因
+        bear_score += 1 
     elif rsi < 30:
         details.append(f"• *RSI*: 30 (`{rsi:,.2f}`) を下回り、*売られすぎ*を示唆。短期的な反発（押し目買い）のチャンス。")
-        bull_score += 1 # 売られすぎは短期的な強気要因
+        bull_score += 1 
     elif rsi > 50:
         details.append(f"• *RSI*: 50 (`{rsi:,.2f}`) を上回り、強いモメンタムが*維持*されています。")
     else:
@@ -469,21 +472,27 @@ def generate_strategy(df_long: pd.DataFrame, df_short: pd.DataFrame) -> dict:
     }
 # ===============================================
 
-# === チャート生成ロジック (前回修正済み) ===
+# === チャート生成ロジック ===
 def generate_chart_image(df: pd.DataFrame, analysis_result: dict) -> io.BytesIO:
     """
     終値と主要なテクニカル指標を含むチャート画像を生成します。
     """
-    # ... (チャート生成ロジックは前回修正から変更なし) ...
     BBU_COL = 'BBU_20_2.0_2.0'
     BBL_COL = 'BBL_20_2.0_2.0'
     
+    # 描画に必要なカラムをチェック（SMA_200は長期トレンドのため必須）
     required_cols = ['Close', 'High', 'Low', 'SMA_50', 'SMA_200', BBU_COL, BBL_COL]
     
-    df_plot = df.dropna(subset=['Close', 'SMA_50']).copy() 
+    # NaN値が多く、描画ができない可能性を考慮してNaNを含む行をドロップ
+    df_plot = df.dropna(subset=['Close', 'SMA_50', 'SMA_200']).copy() 
     
     if not all(col in df_plot.columns for col in required_cols):
         logging.error(f"チャート描画に必要なカラムの一部が不足しています。利用可能なカラム: {df_plot.columns.tolist()}")
+        return io.BytesIO()
+
+    # データが少なすぎる場合のチェック
+    if len(df_plot) < 5:
+        logging.error("チャート描画に必要なデータポイントが少なすぎます。")
         return io.BytesIO()
 
 
@@ -521,6 +530,7 @@ def generate_chart_image(df: pd.DataFrame, analysis_result: dict) -> io.BytesIO:
     formatter = DateFormatter("%m/%d")
     ax.xaxis.set_major_formatter(formatter)
 
+    # x軸のラベルを間引く
     if len(df_plot.index) > 15:
         ax.xaxis.set_major_locator(DayLocator(interval=math.ceil(len(df_plot.index) / 8)))
     else:
@@ -552,7 +562,7 @@ def update_report_data():
     global_data['scheduler_status'] = '分析実行中...' 
     now = datetime.datetime.now()
     last_updated_str = now.strftime('%Y-%m-%d %H:%M:%S')
-    global_data['last_updated'] = last_updated_str # 更新日時も先に設定
+    global_data['last_updated'] = last_updated_str 
     # ------------------------------------
 
     logging.info("スケジュールされたレポート更新タスク開始（実践分析モード）...")
@@ -567,7 +577,7 @@ def update_report_data():
         # --- エラー時のグローバルデータ更新 ---
         global_data.update({
             'scheduler_status': 'データ取得エラー',
-            'strategy': 'データ取得に失敗しました。BOTの実行環境を確認してください。',
+            'strategy': 'データ取得に失敗しました。BOTの実行環境を確認してください。ログを確認してください。',
             'bias': 'N/A',
             'dominance': 'N/A',
             'current_price': 0,
@@ -621,7 +631,7 @@ def update_report_data():
     global_data['dominance'] = analysis_result['dominance']
     global_data['predictions'] = analysis_result['predictions']
 
-    # 7. レポートの整形 (省略 - Telegram送信ロジックは前回修正から変更なし)
+    # 7. レポートの整形
     price = analysis_result['price']
     P, R1, S1, ma50, rsi = analysis_result['P'], analysis_result['R1'], analysis_result['S1'], analysis_result['MA50'], analysis_result['RSI']
     dominance = analysis_result['dominance']
@@ -754,10 +764,9 @@ if not scheduler.running:
     scheduler.start()
     logging.info("✅ スケジューラーを開始しました。")
 
-# --- 🔥 最重要修正点: アプリ起動後に初回実行をスレッドでトリガー ---
-# Flaskの初期化が完了した後で、重い分析処理を別スレッドで実行します。
-# これにより、Webサーバーがブロックされずに済み、ダッシュボードのJSが即座にポーリングできます。
+# --- 🔥 アプリ起動後の初回実行トリガー ---
 if __name__ == '__main__':
+    # Flaskの起動とは別に、分析処理を別スレッドで開始
     Thread(target=update_report_data).start()
     port = int(os.environ.get('PORT', 5000))
     logging.info(f"ローカルサーバーを {port} ポートで開始します。")
