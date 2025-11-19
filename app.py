@@ -367,7 +367,8 @@ def generate_strategy(df_long: pd.DataFrame, df_short: pd.DataFrame) -> dict:
 
     # 短期（4時間足）の分析
     latest_short = df_short_clean.iloc[-1]
-    P_short, R1_short, S1_short, _, _ = calculate_pivot_levels(df_short, 'Fibonacci')
+    # 4時間足のピボットR1, S1を再計算または取得 (ここでは日足と同じクラシックを使用し、4時間足データで計算)
+    _, R1_short, S1_short, _, _ = calculate_pivot_levels(df_short, 'Classic')
     short_ma50 = latest_short['SMA_50']
 
     # 総合バイアスと戦略の決定
@@ -440,8 +441,6 @@ def generate_strategy(df_long: pd.DataFrame, df_short: pd.DataFrame) -> dict:
     R1_long_str = f"`${R1_long:,.2f}`"
     S1_long_str = f"`${S1_long:,.2f}`"
     P_long_str = f"`${P_long:,.2f}`"
-    # 4時間足のピボットR1, S1を再計算または取得 (ここでは日足と同じクラシックを使用し、4時間足データで計算)
-    _, R1_short, S1_short, _, _ = calculate_pivot_levels(df_short, 'Classic')
     R1_short_str = f"`${R1_short:,.2f}`"
     S1_short_str = f"`${S1_short:,.2f}`"
 
@@ -663,7 +662,7 @@ def update_report_data():
         f"👑 *BTC実践分析レポート (テクニカルBOT)* 👑\n\n"
         
         f"📅 *最終データ更新*: `{last_updated_str}`\n"
-        f"⏰ *次回通知予定*: *`{next_run_str}`* (約 {NEXT_RUN_HOURS}時間後)\n" # <--- NEW LINE
+        f"⏰ *次回通知予定*: *`{next_run_str}`* (約 {NEXT_RUN_HOURS}時間後)\n"
         f"📊 *処理データ件数*: *{len(df_long)}* 件 ({LONG_INTERVAL}足) + *{len(df_short)}* 件 ({SHORT_INTERVAL}足)\n\n" 
         
         # --- 市場優勢度の強調 ---
@@ -671,13 +670,16 @@ def update_report_data():
         f"🚨 *総合優勢度*: *{dominance}*\n\n"
         
         f"--- *主要価格帯と指標 (USD)* ---\n"
-        f"{'\\n'.join(price_analysis)}\n\n" 
+        # FIX: リストを単一改行文字 ('\n') で結合
+        f"{'\n'.join(price_analysis)}\n\n" 
         
         f"--- *動向の詳細分析と根拠* ---\n"
-        f"{'\\n'.join(details)}\n\n" 
+        # FIX: リストを単一改行文字 ('\n') で結合
+        f"{'\n'.join(details)}\n\n" 
         
         f"--- *短期動向と予測* ---\n"
-        f"{'\\n'.join(prediction_lines)}\n\n"
+        # FIX: リストを単一改行文字 ('\n') で結合
+        f"{'\n'.join(prediction_lines)}\n\n"
         
         f"--- *総合戦略サマリー* ---\n"
         f"🛡️ *推奨戦略*: *{strategy}*\n\n"
@@ -698,7 +700,8 @@ def update_report_data():
 
     report_message += (
         f"{chr(8212) * 20}\n" # 区切り線
-        f"{'\\n'.join(backtest_lines)}\n\n"
+        # FIX: リストを単一改行文字 ('\n') で結合
+        f"{'\n'.join(backtest_lines)}\n\n" 
         f"_※ この分析は、実戦的なマルチタイムフレーム分析に基づきますが、投資助言ではありません。_"
     )
 
