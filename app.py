@@ -156,9 +156,7 @@ def fetch_btc_ohlcv_data(period: str, interval: str) -> pd.DataFrame:
             df.index.name = 'Date'
             if 'Close' not in df.columns:
                 raise KeyError("'Close'カラムが見つかりません。")
-            if 'Volume' not in df.columns: # Volumeカラムのチェックを追加
-                df['Volume'] = 0 # 存在しない場合は0埋め
-            
+
             df['Close'] = df['Close'].round(2)
             logging.info(f"✅ 過去データ取得成功。件数: {len(df)} ({interval})")
             return df
@@ -179,7 +177,7 @@ def fetch_btc_ohlcv_data(period: str, interval: str) -> pd.DataFrame:
 
 def analyze_data(df: pd.DataFrame) -> pd.DataFrame:
     """
-    取得したデータフレームにテクニカル指標（MA, RSI, MACD, BB, Stoachastics, VMA）を追加します。
+    取得したデータフレームにテクニカル指標（MA, RSI, MACD, BB, Stoachastics）を追加します。
     """
     if df.empty:
         return df
@@ -191,10 +189,6 @@ def analyze_data(df: pd.DataFrame) -> pd.DataFrame:
     df.ta.macd(fast=12, slow=26, signal=9, append=True) # モメンタム
     df.ta.bbands(length=20, append=True) # ボラティリティ
     df.ta.stoch(k=14, d=3, append=True) # ストキャスティクス (短期過熱感の補完)
-    
-    # === NEW: 出来高分析の追加 (Volume Moving Average) ===
-    # 出来高の移動平均 (20期間)
-    df.ta.sma(close=df['Volume'], length=20, prefix='VMA', append=True) 
     # ===============================================
 
     logging.info("✅ テクニカル指標の計算完了。")
@@ -240,7 +234,6 @@ def backtest_strategy(df: pd.DataFrame, initial_capital: float = BACKTEST_CAPITA
     データフレームに基づき、現在の戦略ロジックをバックテストします。
     日足データを使用し、MAとRSIに基づくトレンドフォロー戦略を適用します。
     """
-    # NOTE: バックテスト時はNaN値を削除して完全にデータが揃った期間で実行
     df_clean = df.dropna().copy()
     if df_clean.empty:
         return {
@@ -345,55 +338,36 @@ def backtest_strategy(df: pd.DataFrame, initial_capital: float = BACKTEST_CAPITA
 def generate_strategy(df_long: pd.DataFrame, df_short: pd.DataFrame) -> dict:
     """
     日足と4時間足のテクニカル指標に基づいて、総合的な戦略と予測、市場の優勢度を決定します。
-    出来高分析を追加。
     """
-    # NOTE: .iloc[-1]で最新の行を取得する際、NaN値で KeyError になるのを避けるため
-    # dropna()せずに、iloc[-1]を取得し、辞書アクセスでget()を使用してデフォルト値を設定する
-    if df_long.empty or df_short.empty:
+    df_long_clean = df_long.dropna()
+    df_short_clean = df_short.dropna()
+
+    # データ不足時のエラーハンドリング
+    if len(df_long_clean) < 2 or len(df_short_clean) < 2:
         price = df_long['Close'].iloc[-1] if not df_long.empty and 'Close' in df_long.columns else 0
         return {
             'price': price, 'P': price, 'R1': price * 1.01, 'S1': price * 0.99, 'MA50': price, 'RSI': 50,
-            'R2_long': price * 1.02, 'S2_long': price * 0.98, 'R1_short': price * 1.005, 'S1_short': price * 0.995,
-            'MA200': price, 'BBW': 0, 'StochK_long': 50, 'StochD_long': 50,
-            'ShortRSI': 50, 'ShortMACDH': 0, 'ShortStochK': 50,
-            'Volume': 0, 'VMA': 0, 'VolumeRatio': 0, # NEW: 出来高情報
             'bias': 'データ不足', 'dominance': 'N/A', # 初期値
             'strategy': '分析に必要な十分な期間のデータが揃っていません。',
             'details': ['分析に必要な十分な期間のデータが揃っていません。'],
             'predictions': {'1h': 'N/A', '4h': 'N/A', '12h': 'N/A', '24h': 'N/A'}
         }
 
-
-    latest = df_long.iloc[-1]
-    latest_short = df_short.iloc[-1]
-
-    # 日足の指標値 (getメソッドを使用して、KeyErrorを防ぐ)
-    price = latest.get('Close', 0)
-    ma50 = latest.get('SMA_50', price)
-    ma200 = latest.get('SMA_200', price)
-    rsi = latest.get('RSI_14', 50)
-    bbw = latest.get('BBW_20_2.0_2.0', 0) # ボリンジャーバンド幅 (BBW)
-    stoch_k_long = latest.get('STOCHk_14_3_3', 50)
-    stoch_d_long = latest.get('STOCHd_14_3_3', 50)
+    latest = df_long_clean.iloc[-1]
     
-    # === NEW: 出来高関連の指標 (KeyErrorが発生していた箇所) ===
-    volume = latest.get('Volume', 0)
-    vma = latest.get('VMA_20', volume if volume > 0 else 1) # VMAがない場合は現在の出来高を使用 (または1で割るのを避ける)
-    # VMAが0の場合はエラーを避けるために1を使用
-    volume_ratio = (volume / vma) * 100 if vma > 0 else 0
-    is_volume_surge = volume_ratio > 150 # 出来高がVMAの150%を超えたら急増と判断
-    # ===============================
+    # 日足の指標値
+    price = latest['Close']
+    ma50 = latest['SMA_50']
+    ma200 = latest['SMA_200']
+    rsi = latest['RSI_14']
 
     # ピボットポイントの計算 (日足データでクラシックピボットを使用)
-    P_long, R1_long, S1_long, R2_long, S2_long = calculate_pivot_levels(df_long, 'Classic') # R2, S2も取得
+    P_long, R1_long, S1_long, _, _ = calculate_pivot_levels(df_long, 'Classic')
 
-    # 短期（4時間足）の分析 (getメソッドを使用して、KeyErrorを防ぐ)
-    P_short, R1_short, S1_short, R2_short, S2_short = calculate_pivot_levels(df_short, 'Fibonacci')
-    short_ma50 = latest_short.get('SMA_50', price)
-    short_rsi = latest_short.get('RSI_14', 50) # 4h RSI
-    short_macd_h = latest_short.get('MACDh_12_26_9', 0) # 4h MACD Hist
-    short_stoch_k = latest_short.get('STOCHk_14_3_3', 50) # 4h Stoch K
-
+    # 短期（4時間足）の分析
+    latest_short = df_short_clean.iloc[-1]
+    P_short, R1_short, S1_short, _, _ = calculate_pivot_levels(df_short, 'Fibonacci')
+    short_ma50 = latest_short['SMA_50']
 
     # 総合バイアスと戦略の決定
     bias = "中立"
@@ -401,11 +375,6 @@ def generate_strategy(df_long: pd.DataFrame, df_short: pd.DataFrame) -> dict:
     details = []
     bull_score = 0
     bear_score = 0
-    
-    # MACDの比較に必要な値も安全に取得
-    macd_long = latest.get('MACD_12_26_9', 0)
-    macds_long = latest.get('MACDs_12_26_9', 0)
-
 
     # --- 1. 長期・中期トレンドバイアス (日足 MA) ---
     if price > ma200:
@@ -416,7 +385,7 @@ def generate_strategy(df_long: pd.DataFrame, df_short: pd.DataFrame) -> dict:
         bear_score += 2
 
     if price > ma50 * 1.005:
-        details.append(f"• *中期トレンド*: 価格がMA50 (`{ma50:,.2f}`) を明確に上回り、中期的に強い強気トレンドが優勢です。")
+        details.append(f"• *中期トレンド*: 価格がMA50 (`{ma50:,.2f}`) を明確に上回り、中期的に強い強気トレンドです。")
         bull_score += 1
     elif price < ma50 * 0.995:
         details.append(f"• *中期トレンド*: 価格がMA50 (`{ma50:,.2f}`) を明確に下回り、中期的な弱気トレンドが優勢です。")
@@ -425,87 +394,45 @@ def generate_strategy(df_long: pd.DataFrame, df_short: pd.DataFrame) -> dict:
         details.append(f"• *中期トレンド*: 価格はMA50 (`{ma50:,.2f}`) 付近で推移しており、レンジ相場が想定されます。")
 
     # --- 2. モメンタムシグナル (MACDとRSI 50ライン) ---
-    if macd_long > macds_long:
-        details.append("• *モメンタム (日足)*: MACDがシグナルラインの上にあり、モメンタムは*上昇*傾向です。")
+    if latest['MACD_12_26_9'] > latest['MACDs_12_26_9']:
+        details.append("• *モメンタム*: MACDがシグナルラインの上にあり、モメンタムは*上昇*傾向です。")
         bull_score += 1
-    elif macd_long < macds_long:
-        details.append("• *モメンタム (日足)*: MACDがシグナルラインの下にあり、モメンタムは*下降*傾向です。")
+    elif latest['MACD_12_26_9'] < latest['MACDs_12_26_9']:
+        details.append("• *モメンタム*: MACDがシグナルラインの下にあり、モメンタムは*下降*傾向です。")
         bear_score += 1
 
     # --- 3. 過熱感 (RSI) ---
     if rsi > 70:
-        details.append(f"• *RSI (日足)*: 70 (`{rsi:,.2f}`) を超え、*買われすぎ*を示唆。短期的な調整（利確売り）に警戒。")
+        details.append(f"• *RSI*: 70 (`{rsi:,.2f}`) を超え、*買われすぎ*を示唆。短期的な調整（利確売り）に警戒。")
         bear_score += 1 # 買われすぎは短期的な弱気要因
     elif rsi < 30:
-        details.append(f"• *RSI (日足)*: 30 (`{rsi:,.2f}`) を下回り、*売られすぎ*を示唆。短期的な反発（押し目買い）のチャンス。")
+        details.append(f"• *RSI*: 30 (`{rsi:,.2f}`) を下回り、*売られすぎ*を示唆。短期的な反発（押し目買い）のチャンス。")
         bull_score += 1 # 売られすぎは短期的な強気要因
     elif rsi > 50:
-        details.append(f"• *RSI (日足)*: 50 (`{rsi:,.2f}`) を上回り、強いモメンタムが*維持*されています。")
+        details.append(f"• *RSI*: 50 (`{rsi:,.2f}`) を上回り、強いモメンタムが*維持*されています。")
     else:
-        details.append(f"• *RSI (日足)*: 50 (`{rsi:,.2f}`) を下回り、弱いモメンタムが*継続*しています。")
-        
-    # --- 4. Stochastics (日足) ---
-    if stoch_k_long > 80 and stoch_d_long > 80:
-        details.append("• *ストキャスティクス (日足)*: 買われすぎ水準。日足の*利確売り*に注意が必要です。")
-        bear_score += 0.5
-    elif stoch_k_long < 20 and stoch_d_long < 20:
-        details.append("• *ストキャスティクス (日足)*: 売られすぎ水準。日足の*反発の可能性*があります。")
-        bull_score += 0.5
-        
-    # --- 5. Volatility Analysis (日足 BBW) ---
-    if bbw < 5:
-        details.append(f"• *ボラティリティ (日足)*: BB幅 (`{bbw:,.2f}%`) が極端に狭く、*大相場前のエネルギー蓄積*を示唆します（ブレイクアウトに注意）。")
-    elif bbw > 15:
-        details.append(f"• *ボラティリティ (日足)*: BB幅 (`{bbw:,.2f}%`) が広く、*ボラティリティが高止まり*しており、調整（レンジ回帰）リスクがあります。")
-    else:
-        details.append(f"• *ボラティリティ (日足)*: BB幅 (`{bbw:,.2f}%`) は平均的で、通常のトレンド継続またはレンジを想定します。")
-        
-    # --- 6. Short-term Analysis (4h) ---
-    details.append(f"• *短期RSI (4h)*: `{short_rsi:,.2f}`。{( '70超えで買われすぎ' if short_rsi > 70 else '30未満で売られすぎ' if short_rsi < 30 else '中立水準')}")
-    if short_macd_h > 0:
-        details.append(f"• *短期モメンタム (4h MACD Hist)*: ポジティブ (`{short_macd_h:,.2f}`)。短期的には*上昇圧力が強い*です。")
-        bull_score += 0.5
-    elif short_macd_h < 0:
-        details.append(f"• *短期モメンタム (4h MACD Hist)*: ネガティブ (`{short_macd_h:,.2f}`)。短期的には*下降圧力が強い*です。")
-        bear_score += 0.5
+        details.append(f"• *RSI*: 50 (`{rsi:,.2f}`) を下回り、弱いモメンタムが*継続*しています。")
 
-    # --- NEW: 7. 出来高分析 (Volume) ---
-    if is_volume_surge:
-        volume_msg = f"• *出来高*: 過去20日の平均出来高 (`{vma:,.0f}`) に対し、*出来高が急増* (`{volume:,.0f}` / {volume_ratio:,.0f}%) しています。"
-        
-        # 出来高を伴う価格変動はトレンドの信頼性を高める
-        if price > ma50: # 価格がMA50より上で、出来高急増 = 上昇の信頼性強化
-            details.append(volume_msg + "価格がMA50を上回っているため、上昇トレンドの*信頼性が高い*です。")
-            bull_score += 1.5
-        elif price < ma50: # 価格がMA50より下で、出来高急増 = 下降の信頼性強化
-            details.append(volume_msg + "価格がMA50を下回っているため、下降トレンドの*信頼性が高い*です。")
-            bear_score += 1.5
-        else:
-            details.append(volume_msg + "*レンジブレイク*の兆候か、*大きなトレンド転換*を示唆します。")
-            
-    else:
-        details.append(f"• *出来高*: 出来高は平均的 (`{volume:,.0f}` / VMA20: `{vma:,.0f}`) で、トレンドの信頼性に関する特筆すべきシグナルはありません。")
-
-    # --- 8. 総合バイアスの決定 ---
+    # --- 4. 総合バイアスの決定 ---
     score_diff = bull_score - bear_score
     
-    if score_diff >= 4.5:
+    if score_diff >= 3:
         dominance = "明確なロング優勢 🚀"
         bias = "強い上昇"
-    elif score_diff >= 1.5:
+    elif score_diff == 2:
         dominance = "ロング優勢 📈"
         bias = "上昇"
-    elif score_diff <= -4.5:
+    elif score_diff <= -3:
         dominance = "明確なショート優勢 💥"
         bias = "強い下降"
-    elif score_diff <= -1.5:
+    elif score_diff == -2:
         dominance = "ショート優勢 📉"
         bias = "下降"
     else:
         dominance = "中立/レンジ ↔️"
         bias = "レンジ/中立"
 
-    # --- 9. 総合戦略の決定 (RSIと出来高を考慮) ---
+    # --- 5. 総合戦略の決定 ---
     R1_long_str = f"`${R1_long:,.2f}`"
     S1_long_str = f"`${S1_long:,.2f}`"
     P_long_str = f"`${P_long:,.2f}`"
@@ -514,35 +441,20 @@ def generate_strategy(df_long: pd.DataFrame, df_short: pd.DataFrame) -> dict:
 
 
     if dominance in ["明確なロング優勢 🚀", "ロング優勢 📈"]:
-        if is_volume_surge:
-            strategy = f"🚀 *ブレイクアウト伴う最強のロング戦略*。出来高が急増し、上昇トレンドの確度が高い。日足S1 ({S1_long_str}) への押し目買いを積極的に検討。"
-        # RSIが買われすぎ水準の場合、短期調整を警戒
-        elif rsi > 70 or short_rsi > 70: 
-            strategy = f"🚨 *短期調整警戒のロング戦略*。中期はロング優勢だが、RSIが買われすぎ水準。短期的な調整（利確売り）を警戒し、日足S1 ({S1_long_str}) での押し目買いを待つ。"
-        elif latest_short.get('Close', price) > short_ma50: # 短期も上向き
-            strategy = f"🌟 *ロング優勢の押し目買い戦略*。日足S1 ({S1_long_str}) または4h S1 ({S1_short_str}) への*押し目買い*を検討。"
+        if latest_short['Close'] > short_ma50: # 短期も上向き
+            strategy = f"🌟 *最強のロング戦略*。日足S1 ({S1_long_str}) または4h S1 ({S1_short_str}) への*押し目買い*を積極的に検討。"
         else:
             strategy = f"ロング優勢の押し目買い戦略。日足P ({P_long_str}) への短期的な反落時が主な買い場。"
-            
     elif dominance in ["明確なショート優勢 💥", "ショート優勢 📉"]:
-        if is_volume_surge:
-            strategy = f"💥 *ブレイクアウト伴う最強のショート戦略*。出来高が急増し、下降トレンドの確度が高い。日足R1 ({R1_long_str}) への戻り売りを積極的に検討。"
-        # RSIが売られすぎ水準の場合、短期反発を警戒 (現在のレポートの状況を反映)
-        elif rsi < 30 or short_rsi < 30: 
-            strategy = f"💡 *短期反発警戒のショート戦略*。中期はショート優勢だが、RSIが売られすぎ水準。短期的な反発（押し目買い）を待ってから、日足R1 ({R1_long_str}) または4h R1 ({R1_short_str}) への*戻り売り*を検討。"
-        elif latest_short.get('Close', price) < short_ma50: # 短期も下向き
-            strategy = f"📉 *ショート優勢の戻り売り戦略*。日足R1 ({R1_long_str}) または4h R1 ({R1_short_str}) への*戻り売り*を検討。"
+        if latest_short['Close'] < short_ma50: # 短期も下向き
+            strategy = f"💥 *最強のショート戦略*。日足R1 ({R1_long_str}) または4h R1 ({R1_short_str}) への*戻り売り*を積極的に検討。"
         else:
             strategy = f"ショート優勢の戻り売り戦略。日足P ({P_long_str}) への短期的な上昇時が主な売り場。"
-            
     elif dominance == "中立/レンジ ↔️":
         BBB_COL = 'BBB_20_2.0_2.0' 
-        # BBBも安全に取得
-        bbb = latest.get(BBB_COL, 100)
+        bbb = latest[BBB_COL] if BBB_COL in latest else 100 
 
-        if is_volume_surge: # レンジでも出来高急増
-             strategy = f"🚨 *出来高を伴うブレイクアウト警戒*。日足R1 ({R1_long_str}) / S1 ({S1_long_str}) のどちらに抜けるか注意深く監視する。"
-        elif bbw < 5: # ボラティリティ圧縮
+        if bbb < 10: # ボラティリティ圧縮
              strategy = f"ボラティリティ圧縮中。日足R1 ({R1_long_str}) / S1 ({S1_long_str}) の*ブレイクアウト待ち*。"
         else:
              strategy = f"レンジ取引。日足S1 ({S1_long_str}) 付近で買い、日足R1 ({R1_long_str}) 付近で売り。"
@@ -550,9 +462,9 @@ def generate_strategy(df_long: pd.DataFrame, df_short: pd.DataFrame) -> dict:
     # --- 短期予測の強化 (MACD, 短期MA50, ピボット基準) ---
     predictions = {
         # 1hは短期モメンタム(4h MACD)
-        "1h": "強い上昇 🚀" if short_macd_h > 0 and latest_short.get('Close', price) > short_ma50 else "強い下降 📉" if short_macd_h < 0 and latest_short.get('Close', price) < short_ma50 else "レンジ ↔️",
+        "1h": "強い上昇 🚀" if latest_short['MACDh_12_26_9'] > 0 and latest_short['Close'] > short_ma50 else "強い下降 📉" if latest_short['MACDh_12_26_9'] < 0 and latest_short['Close'] < short_ma50 else "レンジ ↔️",
         # 4hは短期トレンド(4h MA50)
-        "4h": "上昇 📈" if latest_short.get('Close', price) > short_ma50 else "下降 📉",
+        "4h": "上昇 📈" if latest_short['Close'] > short_ma50 else "下降 📉",
         # 12hは日足のピボットPに対する位置
         "12h": "上昇 📈" if price > P_long else "下降 📉",
         # 24hは総合バイアス
@@ -561,13 +473,7 @@ def generate_strategy(df_long: pd.DataFrame, df_short: pd.DataFrame) -> dict:
 
     return {
         'price': price,
-        'P': P_long, 'R1': R1_long, 'S1': S1_long, 
-        'R2_long': R2_long, 'S2_long': S2_long,
-        'R1_short': R1_short, 'S1_short': S1_short,
-        'MA50': ma50, 'MA200': ma200, 'RSI': rsi, 'BBW': bbw,
-        'StochK_long': stoch_k_long, 'StochD_long': stoch_d_long,
-        'ShortRSI': short_rsi, 'ShortMACDH': short_macd_h, 'ShortStochK': short_stoch_k,
-        'Volume': volume, 'VMA': vma, 'VolumeRatio': volume_ratio, # NEW: 出来高情報
+        'P': P_long, 'R1': R1_long, 'S1': S1_long, 'MA50': ma50, 'RSI': rsi,
         'bias': bias,
         'dominance': dominance, # 優勢度を追加
         'strategy': strategy,
@@ -579,38 +485,28 @@ def generate_strategy(df_long: pd.DataFrame, df_short: pd.DataFrame) -> dict:
 def generate_chart_image(df: pd.DataFrame, analysis_result: dict) -> io.BytesIO:
     """
     終値と主要なテクニカル指標を含むチャート画像を生成します。
-    出来高のサブプロットを追加。
     """
     # 修正: pandas_taの命名規則に合わせてカラム名を変更
     BBU_COL = 'BBU_20_2.0_2.0'
     BBL_COL = 'BBL_20_2.0_2.0'
-    VMA_COL = 'VMA_20' # NEW: VMAカラム
     
-    required_cols = ['Close', 'High', 'Low', 'Volume', 'SMA_50', 'SMA_200', BBU_COL, BBL_COL, VMA_COL]
+    required_cols = ['Close', 'High', 'Low', 'SMA_50', 'SMA_200', BBU_COL, BBL_COL]
     
-    # NaN行を削除してから描画に渡す（描画エラーを防ぐため）。
-    # ただし、今回は出来高VMAの計算開始地点（約20行目）から描画を開始するため、
-    # 必要な列が欠損している行のみを削除する。
-    df_plot = df.dropna(subset=['Close', 'SMA_50', 'Volume', VMA_COL]).copy() 
+    # NaN行を削除してから描画に渡す（描画エラーを防ぐため）
+    df_plot = df.dropna(subset=['Close', 'SMA_50']).copy() 
     
     # 必要なカラムが全て存在するか確認
-    # このチェックはdf_plot（dropna後）に対して行い、実行できない場合は空のバッファを返す。
     if not all(col in df_plot.columns for col in required_cols):
-        logging.error(f"チャート描画に必要なカラムの一部が不足しています。描画に必要なカラムが揃うまで待機します。")
+        logging.error(f"チャート描画に必要なカラムの一部が不足しています。利用可能なカラム: {df_plot.columns.tolist()}")
         return io.BytesIO()
 
-    # === NEW: 出来高用のサブプロットを追加 (2段構成) ===
-    # 出来高(Volume)用のサブプロットをax2として追加
-    fig, (ax, ax2) = plt.subplots(2, 1, figsize=(12, 9), dpi=100, sharex=True, 
-                                 gridspec_kw={'height_ratios': [3, 1]}) 
-    plt.subplots_adjust(hspace=0.05) # プロット間のスペースを削減
-    # ===============================================
 
+    fig, ax = plt.subplots(figsize=(12, 7), dpi=100) # チャートサイズを少し大きく
     
-    # --- 1. 価格ライン (ax) ---
+    # --- 1. 価格ライン ---
     ax.plot(df_plot.index, df_plot['Close'], label='BTC 終値 (USD)', color='#059669', linewidth=2.5) # ラインを太く
 
-    # --- 2. テクニカル指標ラインの描画 (ax) ---
+    # --- 2. テクニカル指標ラインの描画 ---
     # 50日移動平均線 (MA50)
     ax.plot(df_plot.index, df_plot['SMA_50'], label='SMA 50 (中期)', color='#fbbf24', linestyle='-', linewidth=2, alpha=0.8) 
     # 200日移動平均線 (MA200) - 長期トレンド
@@ -620,7 +516,7 @@ def generate_chart_image(df: pd.DataFrame, analysis_result: dict) -> io.BytesIO:
     ax.plot(df_plot.index, df_plot[BBU_COL], label='BB Upper (+2σ)', color='#ef4444', linestyle=':', linewidth=1)
     ax.plot(df_plot.index, df_plot[BBL_COL], label='BB Lower (-2σ)', color='#3b82f6', linestyle=':', linewidth=1)
 
-    # --- 3. 最新の主要レベルの描画 (ax) ---
+    # --- 3. 最新の主要レベルの描画 ---
     price = analysis_result['price']
     P = analysis_result['P']
 
@@ -633,47 +529,24 @@ def generate_chart_image(df: pd.DataFrame, analysis_result: dict) -> io.BytesIO:
         ax.scatter(df_plot.index[-1], price, color='black', s=100, zorder=5) # 点を大きく
         ax.text(df_plot.index[-1], price, f' 現在 ${price:,.2f}', color='black', ha='right', va='bottom', fontsize=12, weight='bold')
 
-    # 4. グラフの装飾 (ax)
+    # 4. グラフの装飾
     ax.set_title(f'{TICKER} 価格推移とテクニカル分析 ({LONG_INTERVAL}足)', fontsize=18, color='#1f2937', weight='bold')
+    ax.set_xlabel('日付', fontsize=12)
     ax.set_ylabel('終値 (USD)', fontsize=12)
-    ax.tick_params(axis='x', labelbottom=False) # 上のプロットのX軸ラベルを非表示にする
-    
-    ax.grid(True, linestyle=':', alpha=0.6)
-    ax.legend(loc='upper left', fontsize=10)
 
-    # === NEW: 出来高プロットの描画 (ax2) ===
-    
-    # 出来高バー（前日比で色分け）
-    # 出来高のローソク足の色を決定: 終値が前日より高ければ緑、低ければ赤
-    # 最初のデータポイントを比較対象として使うため、インデックスが1から始まります。
-    colors = ['#059669' if df_plot['Close'].iloc[i] >= df_plot['Close'].iloc[i-1] else '#ef4444' 
-              for i in range(1, len(df_plot))]
-    
-    # 最初のバーの色は前日がないため、とりあえず緑（上昇）として扱う (最初のバーはデータ開始点)
-    if len(df_plot) > 0:
-        colors.insert(0, '#059669') 
-
-    ax2.bar(df_plot.index, df_plot['Volume'], color=colors, alpha=0.7, label='出来高')
-    ax2.plot(df_plot.index, df_plot[VMA_COL], color='#6b7280', linestyle='--', linewidth=1, label='VMA 20 (出来高移動平均)')
-    
-    ax2.set_ylabel('出来高', fontsize=10)
-    ax2.set_xlabel('日付', fontsize=12) # ax2にのみX軸ラベルを表示
-    ax2.legend(loc='upper left', fontsize=8)
-    ax2.grid(True, linestyle=':', alpha=0.4)
-    
-    # X軸のフォーマットと回転をax2に適用
     formatter = DateFormatter("%m/%d")
-    ax2.xaxis.set_major_formatter(formatter)
+    ax.xaxis.set_major_formatter(formatter)
 
     # データを間引いて表示するためにDayLocatorを設定
     if len(df_plot.index) > 15:
-        ax2.xaxis.set_major_locator(DayLocator(interval=math.ceil(len(df_plot.index) / 8)))
+        # X軸ラベルが見やすくなるように間隔を調整
+        ax.xaxis.set_major_locator(DayLocator(interval=math.ceil(len(df_plot.index) / 8)))
     else:
-        ax2.xaxis.set_major_locator(DayLocator())
+        ax.xaxis.set_major_locator(DayLocator())
 
-    plt.sca(ax2) # X軸ラベルの回転は最後に実行
     plt.xticks(rotation=45, ha='right')
-    
+    plt.grid(True, linestyle=':', alpha=0.6)
+    plt.legend(loc='upper left', fontsize=10)
     plt.tight_layout()
 
     # 5. 画像をメモリ上のバイトストリームとして保存
@@ -694,23 +567,9 @@ def update_report_data():
     global global_data
 
     logging.info("スケジュールされたレポート更新タスク開始（実践分析モード）...")
-    
-    # === 修正箇所: 実行時刻をUTCからJSTへ変換し、次回実行時刻もJSTで計算 ===
-    # JST = UTC + 9時間として処理します。
-    now_utc = datetime.datetime.now()
-    now_jst = now_utc + datetime.timedelta(hours=9)
-    # ---------------------------------------------
-    
-    last_updated_str = now_jst.strftime('%Y-%m-%d %H:%M:%S')
-    
-    # 次回実行時刻の計算 (JSTベースで6時間後)
-    next_run_time = now_jst + datetime.timedelta(hours=6)
-    next_run_time_str = next_run_time.strftime('%Y-%m-%d %H:%M:%S')
+    now = datetime.datetime.now()
+    last_updated_str = now.strftime('%Y-%m-%d %H:%M:%S')
 
-    # === 処理開始時のステータス更新 ===
-    global_data['scheduler_status'] = 'データ取得・分析中...'
-    global_data['last_updated'] = last_updated_str
-    
     # 1. データ取得 (日足と4時間足)
     df_long = fetch_btc_ohlcv_data(LONG_PERIOD, LONG_INTERVAL)
     df_short = fetch_btc_ohlcv_data(SHORT_PERIOD, SHORT_INTERVAL)
@@ -718,10 +577,9 @@ def update_report_data():
     # データが空の場合の処理
     if df_long.empty or df_short.empty:
         logging.error("致命的エラー: データ取得に失敗したため、レポートを生成できません。")
-        # エラー発生時はステータスを更新
-        global_data['scheduler_status'] = 'エラー（データ取得失敗）'
+        global_data['scheduler_status'] = 'エラー'
         global_data['strategy'] = 'データ取得エラー'
-        error_msg = f"❌ *BTC分析レポート生成エラー*\n\nデータ取得に失敗しました。ネットワーク接続を確認するか、数分後に再試行してください。\n最終更新: {last_updated_str} (JST)"
+        error_msg = f"❌ *BTC分析レポート生成エラー*\n\nデータ取得に失敗しました。ネットワーク接続を確認するか、数分後に再試行してください。\n最終更新: {last_updated_str}"
         Thread(target=send_telegram_message, args=(error_msg,)).start()
         return
 
@@ -731,17 +589,15 @@ def update_report_data():
         df_short_analyzed = analyze_data(df_short) # 短期分析も実行
     except Exception as e:
         logging.error(f"致命的エラー: テクニカル分析中にエラーが発生しました: {e}", exc_info=True)
-        global_data['scheduler_status'] = 'エラー（分析失敗）'
-        error_msg = f"❌ *BTC分析レポート生成エラー*\n\nテクニカル分析中にエラーが発生しました。\n詳細: {str(e)}\n最終更新: {last_updated_str} (JST)"
+        global_data['scheduler_status'] = 'エラー'
+        error_msg = f"❌ *BTC分析レポート生成エラー*\n\nテクニカル分析中にエラーが発生しました。\n詳細: {str(e)}\n最終更新: {last_updated_str}"
         Thread(target=send_telegram_message, args=(error_msg,)).start()
         return
 
     # 3. バックテストの実行 (日足データを使用)
     try:
         logging.info(f"バックテスト実行中... 期間: {LONG_PERIOD}")
-        # バックテストはデータが揃っている部分のみを使用するため、dropna()後のデータを使用
-        df_long_clean_for_backtest = df_long_analyzed.dropna() 
-        backtest_results = backtest_strategy(df_long_clean_for_backtest) 
+        backtest_results = backtest_strategy(df_long_analyzed) 
         global_data['backtest'] = backtest_results
         logging.info("✅ バックテスト完了。")
     except Exception as e:
@@ -750,10 +606,9 @@ def update_report_data():
         global_data['backtest'] = backtest_results
 
     # 4. 戦略と予測の生成 (日足と4時間足の両方を使用)
-    # iloc[-1]を使用するため、dropna()していない分析済みデータフレームを渡す (KeyError対策をgenerate_strategy内で実施済み)
     analysis_result = generate_strategy(df_long_analyzed, df_short_analyzed)
 
-    # 5. グローバル状態の更新 (正常完了時)
+    # 5. グローバル状態の更新
     global_data['last_updated'] = last_updated_str
     global_data['data_count'] = len(df_long) + len(df_short) 
     global_data['scheduler_status'] = '稼働中'
@@ -766,51 +621,26 @@ def update_report_data():
     # 6. レポートの整形 (改行と優勢度の強調)
     price = analysis_result['price']
     P, R1, S1, ma50, rsi = analysis_result['P'], analysis_result['R1'], analysis_result['S1'], analysis_result['MA50'], analysis_result['RSI']
-    R2_long, S2_long = analysis_result['R2_long'], analysis_result['S2_long'] 
-    R1_short, S1_short = analysis_result['R1_short'], analysis_result['S1_short'] 
-    ma200, bbw = analysis_result['MA200'], analysis_result['BBW'] 
-    stoch_k_long, stoch_d_long = analysis_result['StochK_long'], analysis_result['StochD_long'] 
-    
-    # NEW: 出来高情報
-    volume, vma, volume_ratio = analysis_result['Volume'], analysis_result['VMA'], analysis_result['VolumeRatio']
-
-
     dominance = analysis_result['dominance'] # 優勢度
     strategy = analysis_result['strategy']
-    details = analysis_result['details'] 
+    details = analysis_result['details']
     predictions = analysis_result['predictions']
 
     # 価格をカンマ区切りにフォーマット
     formatted_current_price = f"`${price:,.2f}`"
     formatted_P = f"`${P:,.2f}`"
-    formatted_R1_long = f"`${R1:,.2f}`"
-    formatted_S1_long = f"`${S1:,.2f}`"
-    formatted_R2_long = f"`${R2_long:,.2f}`"
-    formatted_S2_long = f"`${S2_long:,.2f}`"
-    formatted_R1_short = f"`${R1_short:,.2f}`"
-    formatted_S1_short = f"`${S1_short:,.2f}`"
+    formatted_R1 = f"`${R1:,.2f}`"
+    formatted_S1 = f"`${S1:,.2f}`"
     formatted_MA50 = f"`${ma50:,.2f}`"
-    formatted_MA200 = f"`${ma200:,.2f}`"
     formatted_RSI = f"`{rsi:,.2f}`"
-    formatted_BBW = f"`{bbw:,.2f}%`"
 
     price_analysis = [
         f"💰 *現在価格 (BTC-USD)*: {formatted_current_price}",
         f"🟡 *ピボットポイント (P, 日足)*: {formatted_P}",
-        f"💡 *中期トレンド転換点 (MA50)*: {formatted_MA50}",
-        f"🐻 *長期トレンド基準 (MA200)*: {formatted_MA200}",
-        f"--- 日足 主要レベル (Classic Pivot) ---",
-        f"🔼 R1: {formatted_R1_long}, R2: {formatted_R2_long}",
-        f"🔽 S1: {formatted_S1_long}, S2: {formatted_S2_long}",
-        f"--- 4h 短期主要レベル (Fibonacci Pivot) ---",
-        f"⬆️ R1 (4h): {formatted_R1_short}",
-        f"⬇️ S1 (4h): {formatted_S1_short}",
-        f"--- 主要オシレーター指標 ---",
-        f"🔥 RSI (14期間, 日足): {formatted_RSI}",
-        f"📊 BB幅 (20, 日足): {formatted_BBW}",
-        f"✨ Stochastics K/D (日足): K=`{stoch_k_long:,.2f}`, D=`{stoch_d_long:,.2f}`",
-        f"--- 出来高情報 (Volume) ---", # NEW
-        f"📈 最新出来高: `{volume:,.0f}` (平均VMA20比: `{volume_ratio:,.0f}%`)", # NEW
+        f"🔼 *主要レジスタンス (R1, 日足)*: {formatted_R1}",
+        f"🔽 *主要サポート (S1, 日足)*: {formatted_S1}",
+        f"💡 *中期トレンド転換点 (MA50, 日足)*: {formatted_MA50}",
+        f"🔥 *RSI (14期間, 日足)*: {formatted_RSI}"
     ]
 
     prediction_lines = [f"• {tf}後予測: *{predictions[tf]}*" for tf in ["1h", "4h", "12h", "24h"]]
@@ -818,61 +648,42 @@ def update_report_data():
     # 改行を多く入れ、セクションを明確に分離
     report_message = (
         f"👑 *BTC実践分析レポート (テクニカルBOT)* 👑\n\n"
-        f"📅 *最終データ更新*: `{last_updated_str}` (JST)\n"
-        f"⏱️ *次回の通知予定*: `{next_run_time_str}` (JST)\n" # JSTベースの次回通知予定時刻
-        f"📊 *処理データ件数*: *{len(df_long)}* 件 ({LONG_INTERVAL}足) + *{len(df_short)}* 件 ({SHORT_INTERVAL}足)\n\n" 
+        f"📅 *最終データ更新*: `{last_updated_str}`\n"
+        f"📊 *処理データ件数*: *{len(df_long)}* 件 ({LONG_INTERVAL}足) + *{len(df_short)}* 件 ({SHORT_INTERVAL}足})\n\n"
         
         # --- 市場優勢度の強調 ---
         f"**🚀 市場の優勢 (Dominance) 🚀**\n"
         f"🚨 *総合優勢度*: *{dominance}*\n\n"
         
         f"--- *主要価格帯と指標 (USD)* ---\n"
-        # 修正: '\n' (実際の改行コード) をジョイナーとして使用
-        f"{'\n'.join(price_analysis)}\n\n" 
+        f"{'\\n'.join(price_analysis)}\n\n" # \nでアイテム間を改行
         
         f"--- *動向の詳細分析と根拠* ---\n"
-        # 修正: '\n' (実際の改行コード) をジョイナーとして使用
-        f"{'\n'.join(details)}\n\n"
+        f"{'\\n'.join(details)}\n\n" # \nで箇条書き間を改行
         
         f"--- *短期動向と予測* ---\n"
-        # 修正: '\n' (実際の改行コード) をジョイナーとして使用
-        f"{'\n'.join(prediction_lines)}\n\n"
+        f"{'\\n'.join(prediction_lines)}\n\n" # \nで予測間を改行
         
         f"--- *総合戦略サマリー* ---\n"
         f"🛡️ *推奨戦略*: *{strategy}*\n\n"
     )
     
-    # --- バックテスト結果のレポートへの追加 (分かりやすい表現に変更) ---
+    # --- バックテスト結果のレポートへの追加 ---
     if 'error' in backtest_results:
         backtest_lines = [f"⚠️ *バックテスト結果*: {backtest_results['error']}"]
     else:
-        # パフォーマンスサマリーの追加
-        total_return = backtest_results['total_return']
-        profit_factor = backtest_results['profit_factor']
-        
-        # 0.05% (5ベーシスポイント) を超える利益があれば成功と見なす
-        if total_return > 0.05:
-            summary = f"✨ *評価*: この戦略は*{total_return}%の利益*を生み出し、*{profit_factor}* のPFを達成しました。堅調に機能しています。"
-        elif total_return > -0.05:
-            summary = f"💡 *評価*: この戦略はほぼ*中立*なパフォーマンスでした。大きな優位性はありません。"
-        else:
-            summary = f"🔻 *評価*: この戦略は*{total_return}%の損失*を計上しました。ロジックの*見直しが必要*です。"
-
         backtest_lines = [
-            f"--- *戦略バックテスト結果 ({LONG_PERIOD} / {LONG_INTERVAL}足)* ---",
-            summary,
-            # $マークのエスケープを削除 (Python f-string内では\は不要だが、Markdownとして解釈させるために`$`で囲むことで安全性を高める)
-            f"💰 *最終資産*: `${backtest_results['final_capital']:,.2f}` (初期: `${BACKTEST_CAPITAL:,.2f}`)",
-            f"📈 *総リターン率*: *{total_return}%* (期間中の増減)",
-            f"🏆 *プロフィットファクター (PF)*: `{profit_factor}` (総利益/総損失。*1.0以上*が優勢を示します)",
-            f"📉 *最大ドローダウン (DD)*: `{backtest_results['max_drawdown']}%` (期間中の最大の元本割れ率)",
-            f"📊 *取引実績*: `{backtest_results['trades']}` 回の取引 (勝率: `{backtest_results['win_rate']}%`)"
+            f"--- *バックテスト結果 ({LONG_PERIOD} / {LONG_INTERVAL}足)* ---",
+            f"💰 *最終資本*: `\$ {backtest_results['final_capital']:,.2f}` (初期: `\$ {BACKTEST_CAPITAL:,.2f}`)",
+            f"📈 *総リターン率*: *{backtest_results['total_return']}%*",
+            f"🏆 *プロフィットファクター*: `{backtest_results['profit_factor']}` (1.0以上が望ましい)",
+            f"📉 *最大ドローダウン (DD)*: `{backtest_results['max_drawdown']}%` (リスク指標)",
+            f"📊 *取引回数*: `{backtest_results['trades']}` (勝率: `{backtest_results['win_rate']}%`)"
         ]
 
     report_message += (
         f"{chr(8212) * 20}\n" # 区切り線
-        # 修正: '\n' (実際の改行コード) をジョイナーとして使用
-        f"{'\n'.join(backtest_lines)}\n\n" 
+        f"{'\\n'.join(backtest_lines)}\n\n"
         f"_※ この分析は、実戦的なマルチタイムフレーム分析に基づきますが、投資助言ではありません。_"
     )
 
@@ -882,14 +693,11 @@ def update_report_data():
         logging.info("チャート画像を生成中...")
         chart_buffer = generate_chart_image(df_long_analyzed, analysis_result)
         
-        # NEW: 出来高情報をキャプションに追加
-        volume_status = "出来高急増" if analysis_result.get('VolumeRatio', 0) > 150 else "出来高平均的"
-        
         photo_caption = (
             f"📈 *BTC実践分析チャート ({LONG_INTERVAL}足)* 📉\n"
-            f"📅 更新: `{last_updated_str}` (JST)\n" # JSTの更新時刻
+            f"📅 更新: `{last_updated_str}`\n"
             f"💰 現在価格: {formatted_current_price}\n"
-            f"🚨 *優勢度*: *{dominance}* ({volume_status})\n" # 出来高ステータスを追加
+            f"🚨 *優勢度*: *{dominance}*\n" # 優勢度を画像キャプションにも追加
             f"🛡️ *推奨戦略*: {strategy}\n"
             f"_詳細は別途送信されるテキストレポートをご確認ください。_"
         )
@@ -899,13 +707,13 @@ def update_report_data():
             Thread(target=send_telegram_photo, args=(chart_buffer, photo_caption)).start()
         else:
              logging.error("❌ チャート画像のバッファが空です。画像送信をスキップしました。")
-             error_caption = f"⚠️ *チャート生成失敗*\n\nデータは正常に処理されましたが、チャート画像生成中にエラーが発生しました。\n最終更新: {last_updated_str} (JST)"
+             error_caption = f"⚠️ *チャート生成失敗*\n\nデータは正常に処理されましたが、チャート画像生成中にエラーが発生しました。\n最終更新: {last_updated_str}"
              Thread(target=send_telegram_message, args=(error_caption,)).start()
 
 
     except Exception as e:
         logging.error(f"❌ チャート画像の生成または送信に失敗しました: {e}", exc_info=True)
-        error_caption = f"⚠️ *チャート生成失敗*\n\nデータは正常に処理されましたが、チャート画像生成中に予期せぬエラーが発生しました。\nエラー詳細: {str(e)[:100]}...\n最終更新: {last_updated_str} (JST)"
+        error_caption = f"⚠️ *チャート生成失敗*\n\nデータは正常に処理されましたが、チャート画像生成中に予期せぬエラーが発生しました。\nエラー詳細: {str(e)[:100]}...\n最終更新: {last_updated_str}"
         Thread(target=send_telegram_message, args=(error_caption,)).start()
 
 
@@ -922,275 +730,20 @@ def update_report_data():
 def index():
     """ダッシュボードの表示"""
     # テンプレートにglobal_dataを渡すことで、初回表示時に初期値を埋め込む
-    # HTMLファイルの内容がないため、ここでHTMLファイルを生成します。
-    html_content = generate_index_html()
-    return render_template('index.html', **global_data)
+    return render_template('index.html', title='BTC実践テクニカル分析 BOT ダッシュボード', data=global_data)
 
 @app.route('/status')
 def status():
     """現在のステータスをJSONで返すAPIエンドポイント"""
     return jsonify(global_data)
 
-def generate_index_html():
-    """ダッシュボードHTMLを生成します (ファイルが見つからないエラー回避のため)"""
-    return """
-<!DOCTYPE html>
-<html lang="ja">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BTC実践テクニカル分析 BOT ダッシュボード</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
-        body { font-family: 'Inter', sans-serif; background-color: #f3f4f6; color: #1f2937; }
-        .card { background-color: white; border-radius: 1rem; box-shadow: 0 10px 15px rgba(0, 0, 0, 0.1); padding: 1.5rem; }
-        .stat-label { font-size: 0.875rem; color: #6b7280; font-weight: 600; margin-bottom: 0.25rem; }
-        .stat-value { font-size: 1.5rem; font-weight: 700; color: #1f2937; }
-        .price-value { font-size: 2.25rem; font-weight: 800; color: #059669; }
-        .strategy-box { border: 2px solid #3b82f6; background-color: #eff6ff; border-radius: 0.75rem; padding: 1rem; margin-top: 1rem; }
-        .strategy-title { color: #1d4ed8; font-weight: 700; }
-        .prediction-item { background-color: #f9fafb; border-radius: 0.5rem; padding: 0.5rem; }
-        .prediction-value { font-weight: 700; }
-    </style>
-</head>
-<body>
-    <div class="container mx-auto p-4 sm:p-8">
-        <header class="text-center mb-8">
-            <h1 class="text-4xl font-bold text-gray-800">₿ BTC 実践テクニカル分析 BOT ダッシュボード</h1>
-            <p class="text-gray-600 mt-2" id="last-updated">最終更新: N/A</p>
-        </header>
-
-        <!-- メインサマリーカード -->
-        <div class="card mb-8">
-            <div class="flex flex-wrap items-center justify-between">
-                <div class="mb-4 sm:mb-0">
-                    <div class="stat-label">現在のBTC価格 (USD)</div>
-                    <div class="price-value" id="current-price">$0.00</div>
-                    <div class="text-lg font-semibold" id="dominance">N/A</div>
-                </div>
-                
-                <div class="grid grid-cols-2 gap-4">
-                    <div class="text-right">
-                        <div class="stat-label">総合バイアス</div>
-                        <div class="stat-value" id="bias">N/A</div>
-                    </div>
-                    <div class="text-right">
-                        <div class="stat-label">データ範囲</div>
-                        <div class="stat-value text-base" id="data-range">N/A</div>
-                    </div>
-                </div>
-            </div>
-            
-            <div class="strategy-box">
-                <div class="strategy-title text-xl mb-2">🛡️ 推奨戦略サマリー</div>
-                <p id="strategy" class="text-gray-700 font-medium">データ処理中...</p>
-            </div>
-        </div>
-
-        <!-- パフォーマンスとステータス -->
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-            <div class="card">
-                <div class="stat-label">BOTステータス</div>
-                <div class="stat-value text-sm font-medium" id="scheduler-status">初期化中...</div>
-            </div>
-            <div class="card">
-                <div class="stat-label">バックテスト総リターン</div>
-                <div class="stat-value text-red-500" id="backtest-return">0.00%</div>
-            </div>
-            <div class="card">
-                <div class="stat-label">プロフィットファクター (PF)</div>
-                <div class="stat-value" id="backtest-pf">0.00</div>
-            </div>
-        </div>
-        
-        <!-- 短期予測 -->
-        <div class="card mb-8">
-            <h2 class="text-2xl font-semibold mb-4 text-gray-800">短期予測 (Predictions)</h2>
-            <div id="predictions" class="grid grid-cols-2 sm:grid-cols-4 gap-4">
-                <!-- 予測データがここに挿入されます -->
-            </div>
-        </div>
-
-        <!-- 技術指標とレベル -->
-        <div class="card mb-8">
-            <h2 class="text-2xl font-semibold mb-4 text-gray-800">主要テクニカル指標とレベル</h2>
-            <div class="grid grid-cols-2 md:grid-cols-4 gap-4" id="tech-indicators">
-                <!-- 技術指標データがここに挿入されます -->
-            </div>
-        </div>
-        
-        <footer class="text-center text-gray-500 text-sm pt-4">
-            <p>※ このデータはyfinanceから取得され、6時間ごとに更新されます。</p>
-            <p>※ 投資助言ではありません。</p>
-        </footer>
-    </div>
-
-    <script>
-        // グローバル変数
-        let lastKnownData = {};
-
-        // データを取得してダッシュボードを更新する関数
-        async function updateDashboard() {
-            try {
-                const response = await fetch('/status');
-                if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
-                }
-                const data = await response.json();
-                lastKnownData = data;
-                
-                // メインサマリーの更新
-                document.getElementById('last-updated').textContent = `最終更新: ${data.last_updated} (JST)`;
-                document.getElementById('data-range').textContent = data.data_range;
-                
-                const priceElement = document.getElementById('current-price');
-                const price = parseFloat(data.current_price || 0);
-                priceElement.textContent = `$${price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-                
-                // 価格のカラーリング（前回の価格と比較）
-                const previousPrice = parseFloat(lastKnownData.current_price || 0);
-                if (price > previousPrice && previousPrice !== 0) {
-                    priceElement.classList.remove('text-red-500');
-                    priceElement.classList.add('text-green-600');
-                } else if (price < previousPrice && previousPrice !== 0) {
-                    priceElement.classList.remove('text-green-600');
-                    priceElement.classList.add('text-red-500');
-                } else {
-                    priceElement.classList.remove('text-green-600', 'text-red-500');
-                    priceElement.classList.add('text-[#059669]');
-                }
-
-                document.getElementById('dominance').textContent = `市場優勢度: ${data.dominance}`;
-                document.getElementById('bias').textContent = data.bias;
-                document.getElementById('strategy').textContent = data.strategy;
-                document.getElementById('scheduler-status').textContent = data.scheduler_status;
-                
-                // バックテスト結果の更新
-                const backtestReturn = parseFloat(data.backtest.total_return || 0);
-                const backtestReturnEl = document.getElementById('backtest-return');
-                backtestReturnEl.textContent = `${backtestReturn.toFixed(2)}%`;
-                
-                if (backtestReturn > 0) {
-                    backtestReturnEl.classList.remove('text-red-500', 'text-gray-700');
-                    backtestReturnEl.classList.add('text-green-600');
-                } else if (backtestReturn < 0) {
-                    backtestReturnEl.classList.remove('text-green-600', 'text-gray-700');
-                    backtestReturnEl.classList.add('text-red-500');
-                } else {
-                    backtestReturnEl.classList.remove('text-green-600', 'text-red-500');
-                    backtestReturnEl.classList.add('text-gray-700');
-                }
-                
-                document.getElementById('backtest-pf').textContent = parseFloat(data.backtest.profit_factor || 0).toFixed(2);
-                
-                // 短期予測の更新
-                updatePredictions(data.predictions);
-
-                // 技術指標の更新
-                updateTechIndicators(data);
-
-            } catch (error) {
-                console.error("ダッシュボードの更新に失敗しました:", error);
-                document.getElementById('scheduler-status').textContent = 'エラー（通信失敗）';
-            }
-        }
-
-        function updatePredictions(predictions) {
-            const container = document.getElementById('predictions');
-            container.innerHTML = '';
-            
-            const timeframes = {
-                '1h': '1時間後',
-                '4h': '4時間後',
-                '12h': '12時間後',
-                '24h': '24時間後'
-            };
-
-            for (const key in predictions) {
-                const value = predictions[key];
-                const tfName = timeframes[key] || key;
-                
-                let colorClass = 'text-gray-600';
-                if (value.includes('上昇') || value.includes('ロング')) {
-                    colorClass = 'text-green-600';
-                } else if (value.includes('下降') || value.includes('ショート')) {
-                    colorClass = 'text-red-500';
-                }
-
-                const html = `
-                    <div class="prediction-item">
-                        <div class="stat-label">${tfName}</div>
-                        <div class="prediction-value ${colorClass}">${value}</div>
-                    </div>
-                `;
-                container.innerHTML += html;
-            }
-        }
-
-        function updateTechIndicators(data) {
-            const container = document.getElementById('tech-indicators');
-            container.innerHTML = '';
-
-            const indicators = [
-                { label: '日足 MA50', value: data.MA50, format: 'currency' },
-                { label: '日足 MA200', value: data.MA200, format: 'currency' },
-                { label: '日足 RSI', value: data.RSI, format: 'decimal' },
-                { label: '日足 BBW', value: data.BBW, format: 'percent' },
-                { label: '日足 P', value: data.P, format: 'currency' },
-                { label: '日足 R1', value: data.R1, format: 'currency' },
-                { label: '日足 S1', value: data.S1, format: 'currency' },
-                { label: '日足 Volume', value: data.Volume, format: 'int' },
-                { label: '日足 VMA20', value: data.VMA, format: 'int' },
-                { label: '出来高比 (VMA20)', value: data.VolumeRatio, format: 'percent' },
-                { label: '4h RSI', value: data.ShortRSI, format: 'decimal' },
-                { label: '4h MACD Hist', value: data.ShortMACDH, format: 'decimal' },
-            ];
-
-            indicators.forEach(item => {
-                let formattedValue = 'N/A';
-                let rawValue = parseFloat(item.value);
-
-                if (!isNaN(rawValue)) {
-                    if (item.format === 'currency') {
-                        formattedValue = `$${rawValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-                    } else if (item.format === 'percent') {
-                        formattedValue = `${rawValue.toFixed(2)}%`;
-                    } else if (item.format === 'int') {
-                        formattedValue = rawValue.toLocaleString('en-US', { maximumFractionDigits: 0 });
-                    } else { // decimal
-                        formattedValue = rawValue.toFixed(2);
-                    }
-                }
-
-                const html = `
-                    <div class="stat-box">
-                        <div class="stat-label">${item.label}</div>
-                        <div class="stat-value text-base">${formattedValue}</div>
-                    </div>
-                `;
-                container.innerHTML += html;
-            });
-        }
-
-        // 初期ロードと定期更新の開始
-        document.addEventListener('DOMContentLoaded', () => {
-            updateDashboard(); // 初期ロード
-            // 5秒ごとに更新を試みる
-            setInterval(updateDashboard, 5000); 
-        });
-    </script>
-</body>
-</html>
-    """
-    
 # -----------------
 # スケジューラーの初期設定と開始
 # -----------------
 if not scheduler.running:
     app.config.update({
         'SCHEDULER_JOBSTORES': {'default': {'type': 'memory'}},
-        'SCHEDULERS_EXECUTORS': {'default': {'type': 'threadpool', 'max_workers': 20}},
+        'SCHEDULER_EXECUTORS': {'default': {'type': 'threadpool', 'max_workers': 20}},
         'SCHEDULER_API_ENABLED': False
     })
 
