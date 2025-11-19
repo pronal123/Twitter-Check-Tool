@@ -649,7 +649,8 @@ def update_report_data():
     report_message = (
         f"👑 *BTC実践分析レポート (テクニカルBOT)* 👑\n\n"
         f"📅 *最終データ更新*: `{last_updated_str}`\n"
-        f"📊 *処理データ件数*: *{len(df_long)}* 件 ({LONG_INTERVAL}足) + *{len(df_short)}* 件 ({SHORT_INTERVAL}足})\n\n"
+        # ⚠️ SyntaxError修正箇所: 最後の不要な '}' を削除
+        f"📊 *処理データ件数*: *{len(df_long)}* 件 ({LONG_INTERVAL}足) + *{len(df_short)}* 件 ({SHORT_INTERVAL}足)\n\n" 
         
         # --- 市場優勢度の強調 ---
         f"**🚀 市場の優勢 (Dominance) 🚀**\n"
