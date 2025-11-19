@@ -156,7 +156,9 @@ def fetch_btc_ohlcv_data(period: str, interval: str) -> pd.DataFrame:
             df.index.name = 'Date'
             if 'Close' not in df.columns:
                 raise KeyError("'Close'カラムが見つかりません。")
-
+            if 'Volume' not in df.columns: # Volumeカラムのチェックを追加
+                df['Volume'] = 0 # 存在しない場合は0埋め
+            
             df['Close'] = df['Close'].round(2)
             logging.info(f"✅ 過去データ取得成功。件数: {len(df)} ({interval})")
             return df
@@ -177,7 +179,7 @@ def fetch_btc_ohlcv_data(period: str, interval: str) -> pd.DataFrame:
 
 def analyze_data(df: pd.DataFrame) -> pd.DataFrame:
     """
-    取得したデータフレームにテクニカル指標（MA, RSI, MACD, BB, Stoachastics）を追加します。
+    取得したデータフレームにテクニカル指標（MA, RSI, MACD, BB, Stoachastics, VMA）を追加します。
     """
     if df.empty:
         return df
@@ -189,6 +191,10 @@ def analyze_data(df: pd.DataFrame) -> pd.DataFrame:
     df.ta.macd(fast=12, slow=26, signal=9, append=True) # モメンタム
     df.ta.bbands(length=20, append=True) # ボラティリティ
     df.ta.stoch(k=14, d=3, append=True) # ストキャスティクス (短期過熱感の補完)
+    
+    # === NEW: 出来高分析の追加 (Volume Moving Average) ===
+    # 出来高の移動平均 (20期間)
+    df.ta.sma(close=df['Volume'], length=20, prefix='VMA', append=True) 
     # ===============================================
 
     logging.info("✅ テクニカル指標の計算完了。")
@@ -338,6 +344,7 @@ def backtest_strategy(df: pd.DataFrame, initial_capital: float = BACKTEST_CAPITA
 def generate_strategy(df_long: pd.DataFrame, df_short: pd.DataFrame) -> dict:
     """
     日足と4時間足のテクニカル指標に基づいて、総合的な戦略と予測、市場の優勢度を決定します。
+    出来高分析を追加。
     """
     df_long_clean = df_long.dropna()
     df_short_clean = df_short.dropna()
@@ -347,9 +354,10 @@ def generate_strategy(df_long: pd.DataFrame, df_short: pd.DataFrame) -> dict:
         price = df_long['Close'].iloc[-1] if not df_long.empty and 'Close' in df_long.columns else 0
         return {
             'price': price, 'P': price, 'R1': price * 1.01, 'S1': price * 0.99, 'MA50': price, 'RSI': 50,
-            'R2_long': price * 1.02, 'S2_long': price * 0.98, 'R1_short': price * 1.005, 'S1_short': price * 0.995, # NEW
-            'MA200': price, 'BBW': 0, 'StochK_long': 50, 'StochD_long': 50, # NEW
-            'ShortRSI': 50, 'ShortMACDH': 0, 'ShortStochK': 50, # NEW
+            'R2_long': price * 1.02, 'S2_long': price * 0.98, 'R1_short': price * 1.005, 'S1_short': price * 0.995,
+            'MA200': price, 'BBW': 0, 'StochK_long': 50, 'StochD_long': 50,
+            'ShortRSI': 50, 'ShortMACDH': 0, 'ShortStochK': 50,
+            'Volume': 0, 'VMA': 0, 'VolumeRatio': 0, # NEW: 出来高情報
             'bias': 'データ不足', 'dominance': 'N/A', # 初期値
             'strategy': '分析に必要な十分な期間のデータが揃っていません。',
             'details': ['分析に必要な十分な期間のデータが揃っていません。'],
@@ -366,6 +374,13 @@ def generate_strategy(df_long: pd.DataFrame, df_short: pd.DataFrame) -> dict:
     bbw = latest['BBW_20_2.0_2.0'] if 'BBW_20_2.0_2.0' in latest else np.nan # ボリンジャーバンド幅 (BBW)
     stoch_k_long = latest['STOCHk_14_3_3']
     stoch_d_long = latest['STOCHd_14_3_3']
+    
+    # === NEW: 出来高関連の指標 ===
+    volume = latest['Volume']
+    vma = latest['VMA_20']
+    volume_ratio = (volume / vma) * 100 if vma > 0 else 0
+    is_volume_surge = volume_ratio > 150 # 出来高がVMAの150%を超えたら急増と判断
+    # ===============================
 
     # ピボットポイントの計算 (日足データでクラシックピボットを使用)
     P_long, R1_long, S1_long, R2_long, S2_long = calculate_pivot_levels(df_long, 'Classic') # R2, S2も取得
@@ -438,7 +453,7 @@ def generate_strategy(df_long: pd.DataFrame, df_short: pd.DataFrame) -> dict:
         details.append(f"• *ボラティリティ (日足)*: BB幅 (`{bbw:,.2f}%`) が広く、*ボラティリティが高止まり*しており、調整（レンジ回帰）リスクがあります。")
     else:
         details.append(f"• *ボラティリティ (日足)*: BB幅 (`{bbw:,.2f}%`) は平均的で、通常のトレンド継続またはレンジを想定します。")
-
+        
     # --- 6. Short-term Analysis (4h) ---
     details.append(f"• *短期RSI (4h)*: `{short_rsi:,.2f}`。{( '70超えで買われすぎ' if short_rsi > 70 else '30未満で売られすぎ' if short_rsi < 30 else '中立水準')}")
     if short_macd_h > 0:
@@ -448,26 +463,43 @@ def generate_strategy(df_long: pd.DataFrame, df_short: pd.DataFrame) -> dict:
         details.append(f"• *短期モメンタム (4h MACD Hist)*: ネガティブ (`{short_macd_h:,.2f}`)。短期的には*下降圧力が強い*です。")
         bear_score += 0.5
 
-    # --- 7. 総合バイアスの決定 ---
+    # --- NEW: 7. 出来高分析 (Volume) ---
+    if is_volume_surge:
+        volume_msg = f"• *出来高*: 過去20日の平均出来高 (`{vma:,.0f}`) に対し、*出来高が急増* (`{volume:,.0f}` / {volume_ratio:,.0f}%) しています。"
+        
+        # 出来高を伴う価格変動はトレンドの信頼性を高める
+        if price > ma50: # 価格がMA50より上で、出来高急増 = 上昇の信頼性強化
+            details.append(volume_msg + "価格がMA50を上回っているため、上昇トレンドの*信頼性が高い*です。")
+            bull_score += 1.5
+        elif price < ma50: # 価格がMA50より下で、出来高急増 = 下降の信頼性強化
+            details.append(volume_msg + "価格がMA50を下回っているため、下降トレンドの*信頼性が高い*です。")
+            bear_score += 1.5
+        else:
+            details.append(volume_msg + "*レンジブレイク*の兆候か、*大きなトレンド転換*を示唆します。")
+            
+    else:
+        details.append(f"• *出来高*: 出来高は平均的 (`{volume:,.0f}` / VMA20: `{vma:,.0f}`) で、トレンドの信頼性に関する特筆すべきシグナルはありません。")
+
+    # --- 8. 総合バイアスの決定 ---
     score_diff = bull_score - bear_score
     
-    if score_diff >= 3:
+    if score_diff >= 4.5:
         dominance = "明確なロング優勢 🚀"
         bias = "強い上昇"
-    elif score_diff >= 1:
+    elif score_diff >= 1.5:
         dominance = "ロング優勢 📈"
         bias = "上昇"
-    elif score_diff <= -3:
+    elif score_diff <= -4.5:
         dominance = "明確なショート優勢 💥"
         bias = "強い下降"
-    elif score_diff <= -1:
+    elif score_diff <= -1.5:
         dominance = "ショート優勢 📉"
         bias = "下降"
     else:
         dominance = "中立/レンジ ↔️"
         bias = "レンジ/中立"
 
-    # --- 8. 総合戦略の決定 (RSIの過熱感を考慮) ---
+    # --- 9. 総合戦略の決定 (RSIと出来高を考慮) ---
     R1_long_str = f"`${R1_long:,.2f}`"
     S1_long_str = f"`${S1_long:,.2f}`"
     P_long_str = f"`${P_long:,.2f}`"
@@ -476,20 +508,24 @@ def generate_strategy(df_long: pd.DataFrame, df_short: pd.DataFrame) -> dict:
 
 
     if dominance in ["明確なロング優勢 🚀", "ロング優勢 📈"]:
+        if is_volume_surge:
+            strategy = f"🚀 *ブレイクアウト伴う最強のロング戦略*。出来高が急増し、上昇トレンドの確度が高い。日足S1 ({S1_long_str}) への押し目買いを積極的に検討。"
         # RSIが買われすぎ水準の場合、短期調整を警戒
-        if rsi > 70 or short_rsi > 70: 
+        elif rsi > 70 or short_rsi > 70: 
             strategy = f"🚨 *短期調整警戒のロング戦略*。中期はロング優勢だが、RSIが買われすぎ水準。短期的な調整（利確売り）を警戒し、日足S1 ({S1_long_str}) での押し目買いを待つ。"
         elif latest_short['Close'] > short_ma50: # 短期も上向き
-            strategy = f"🌟 *最強のロング戦略*。日足S1 ({S1_long_str}) または4h S1 ({S1_short_str}) への*押し目買い*を積極的に検討。"
+            strategy = f"🌟 *ロング優勢の押し目買い戦略*。日足S1 ({S1_long_str}) または4h S1 ({S1_short_str}) への*押し目買い*を検討。"
         else:
             strategy = f"ロング優勢の押し目買い戦略。日足P ({P_long_str}) への短期的な反落時が主な買い場。"
             
     elif dominance in ["明確なショート優勢 💥", "ショート優勢 📉"]:
+        if is_volume_surge:
+            strategy = f"💥 *ブレイクアウト伴う最強のショート戦略*。出来高が急増し、下降トレンドの確度が高い。日足R1 ({R1_long_str}) への戻り売りを積極的に検討。"
         # RSIが売られすぎ水準の場合、短期反発を警戒 (現在のレポートの状況を反映)
-        if rsi < 30 or short_rsi < 30: 
+        elif rsi < 30 or short_rsi < 30: 
             strategy = f"💡 *短期反発警戒のショート戦略*。中期はショート優勢だが、RSIが売られすぎ水準。短期的な反発（押し目買い）を待ってから、日足R1 ({R1_long_str}) または4h R1 ({R1_short_str}) への*戻り売り*を検討。"
         elif latest_short['Close'] < short_ma50: # 短期も下向き
-            strategy = f"💥 *最強のショート戦略*。日足R1 ({R1_long_str}) または4h R1 ({R1_short_str}) への*戻り売り*を積極的に検討。"
+            strategy = f"📉 *ショート優勢の戻り売り戦略*。日足R1 ({R1_long_str}) または4h R1 ({R1_short_str}) への*戻り売り*を検討。"
         else:
             strategy = f"ショート優勢の戻り売り戦略。日足P ({P_long_str}) への短期的な上昇時が主な売り場。"
             
@@ -497,7 +533,9 @@ def generate_strategy(df_long: pd.DataFrame, df_short: pd.DataFrame) -> dict:
         BBB_COL = 'BBB_20_2.0_2.0' 
         bbb = latest[BBB_COL] if BBB_COL in latest else 100 
 
-        if bbw < 5: # ボラティリティ圧縮
+        if is_volume_surge: # レンジでも出来高急増
+             strategy = f"🚨 *出来高を伴うブレイクアウト警戒*。日足R1 ({R1_long_str}) / S1 ({S1_long_str}) のどちらに抜けるか注意深く監視する。"
+        elif bbw < 5: # ボラティリティ圧縮
              strategy = f"ボラティリティ圧縮中。日足R1 ({R1_long_str}) / S1 ({S1_long_str}) の*ブレイクアウト待ち*。"
         else:
              strategy = f"レンジ取引。日足S1 ({S1_long_str}) 付近で買い、日足R1 ({R1_long_str}) 付近で売り。"
@@ -517,11 +555,12 @@ def generate_strategy(df_long: pd.DataFrame, df_short: pd.DataFrame) -> dict:
     return {
         'price': price,
         'P': P_long, 'R1': R1_long, 'S1': S1_long, 
-        'R2_long': R2_long, 'S2_long': S2_long, # NEW
-        'R1_short': R1_short, 'S1_short': S1_short, # NEW
-        'MA50': ma50, 'MA200': ma200, 'RSI': rsi, 'BBW': bbw, # NEW
-        'StochK_long': stoch_k_long, 'StochD_long': stoch_d_long, # NEW
-        'ShortRSI': short_rsi, 'ShortMACDH': short_macd_h, 'ShortStochK': short_stoch_k, # NEW
+        'R2_long': R2_long, 'S2_long': S2_long,
+        'R1_short': R1_short, 'S1_short': S1_short,
+        'MA50': ma50, 'MA200': ma200, 'RSI': rsi, 'BBW': bbw,
+        'StochK_long': stoch_k_long, 'StochD_long': stoch_d_long,
+        'ShortRSI': short_rsi, 'ShortMACDH': short_macd_h, 'ShortStochK': short_stoch_k,
+        'Volume': volume, 'VMA': vma, 'VolumeRatio': volume_ratio, # NEW: 出来高情報
         'bias': bias,
         'dominance': dominance, # 優勢度を追加
         'strategy': strategy,
@@ -533,28 +572,36 @@ def generate_strategy(df_long: pd.DataFrame, df_short: pd.DataFrame) -> dict:
 def generate_chart_image(df: pd.DataFrame, analysis_result: dict) -> io.BytesIO:
     """
     終値と主要なテクニカル指標を含むチャート画像を生成します。
+    出来高のサブプロットを追加。
     """
     # 修正: pandas_taの命名規則に合わせてカラム名を変更
     BBU_COL = 'BBU_20_2.0_2.0'
     BBL_COL = 'BBL_20_2.0_2.0'
+    VMA_COL = 'VMA_20' # NEW: VMAカラム
     
-    required_cols = ['Close', 'High', 'Low', 'SMA_50', 'SMA_200', BBU_COL, BBL_COL]
+    required_cols = ['Close', 'High', 'Low', 'Volume', 'SMA_50', 'SMA_200', BBU_COL, BBL_COL, VMA_COL]
     
     # NaN行を削除してから描画に渡す（描画エラーを防ぐため）
-    df_plot = df.dropna(subset=['Close', 'SMA_50']).copy() 
+    # 出来高とVMAも描画に必要なので、それらも考慮してdropna
+    df_plot = df.dropna(subset=['Close', 'SMA_50', 'Volume', VMA_COL]).copy() 
     
     # 必要なカラムが全て存在するか確認
     if not all(col in df_plot.columns for col in required_cols):
         logging.error(f"チャート描画に必要なカラムの一部が不足しています。利用可能なカラム: {df_plot.columns.tolist()}")
         return io.BytesIO()
 
+    # === NEW: 出来高用のサブプロットを追加 (2段構成) ===
+    # 出来高(Volume)用のサブプロットをax2として追加
+    fig, (ax, ax2) = plt.subplots(2, 1, figsize=(12, 9), dpi=100, sharex=True, 
+                                 gridspec_kw={'height_ratios': [3, 1]}) 
+    plt.subplots_adjust(hspace=0.05) # プロット間のスペースを削減
+    # ===============================================
 
-    fig, ax = plt.subplots(figsize=(12, 7), dpi=100) # チャートサイズを少し大きく
     
-    # --- 1. 価格ライン ---
+    # --- 1. 価格ライン (ax) ---
     ax.plot(df_plot.index, df_plot['Close'], label='BTC 終値 (USD)', color='#059669', linewidth=2.5) # ラインを太く
 
-    # --- 2. テクニカル指標ラインの描画 ---
+    # --- 2. テクニカル指標ラインの描画 (ax) ---
     # 50日移動平均線 (MA50)
     ax.plot(df_plot.index, df_plot['SMA_50'], label='SMA 50 (中期)', color='#fbbf24', linestyle='-', linewidth=2, alpha=0.8) 
     # 200日移動平均線 (MA200) - 長期トレンド
@@ -564,7 +611,7 @@ def generate_chart_image(df: pd.DataFrame, analysis_result: dict) -> io.BytesIO:
     ax.plot(df_plot.index, df_plot[BBU_COL], label='BB Upper (+2σ)', color='#ef4444', linestyle=':', linewidth=1)
     ax.plot(df_plot.index, df_plot[BBL_COL], label='BB Lower (-2σ)', color='#3b82f6', linestyle=':', linewidth=1)
 
-    # --- 3. 最新の主要レベルの描画 ---
+    # --- 3. 最新の主要レベルの描画 (ax) ---
     price = analysis_result['price']
     P = analysis_result['P']
 
@@ -577,24 +624,43 @@ def generate_chart_image(df: pd.DataFrame, analysis_result: dict) -> io.BytesIO:
         ax.scatter(df_plot.index[-1], price, color='black', s=100, zorder=5) # 点を大きく
         ax.text(df_plot.index[-1], price, f' 現在 ${price:,.2f}', color='black', ha='right', va='bottom', fontsize=12, weight='bold')
 
-    # 4. グラフの装飾
+    # 4. グラフの装飾 (ax)
     ax.set_title(f'{TICKER} 価格推移とテクニカル分析 ({LONG_INTERVAL}足)', fontsize=18, color='#1f2937', weight='bold')
-    ax.set_xlabel('日付', fontsize=12)
     ax.set_ylabel('終値 (USD)', fontsize=12)
+    ax.tick_params(axis='x', labelbottom=False) # 上のプロットのX軸ラベルを非表示にする
+    
+    ax.grid(True, linestyle=':', alpha=0.6)
+    ax.legend(loc='upper left', fontsize=10)
 
+    # === NEW: 出来高プロットの描画 (ax2) ===
+    
+    # 出来高バー（前日比で色分け）
+    # 出来高のローソク足の色を決定: 終値が前日より高ければ緑、低ければ赤
+    colors = ['#059669' if df_plot['Close'].iloc[i] >= df_plot['Close'].iloc[i-1] else '#ef4444' 
+              for i in range(1, len(df_plot))]
+    colors.insert(0, '#059669') # 最初の色はとりあえずグリーンとして扱う (ダミー)
+
+    ax2.bar(df_plot.index, df_plot['Volume'], color=colors, alpha=0.7, label='出来高')
+    ax2.plot(df_plot.index, df_plot[VMA_COL], color='#6b7280', linestyle='--', linewidth=1, label='VMA 20 (出来高移動平均)')
+    
+    ax2.set_ylabel('出来高', fontsize=10)
+    ax2.set_xlabel('日付', fontsize=12) # ax2にのみX軸ラベルを表示
+    ax2.legend(loc='upper left', fontsize=8)
+    ax2.grid(True, linestyle=':', alpha=0.4)
+    
+    # X軸のフォーマットと回転をax2に適用
     formatter = DateFormatter("%m/%d")
-    ax.xaxis.set_major_formatter(formatter)
+    ax2.xaxis.set_major_formatter(formatter)
 
     # データを間引いて表示するためにDayLocatorを設定
     if len(df_plot.index) > 15:
-        # X軸ラベルが見やすくなるように間隔を調整
-        ax.xaxis.set_major_locator(DayLocator(interval=math.ceil(len(df_plot.index) / 8)))
+        ax2.xaxis.set_major_locator(DayLocator(interval=math.ceil(len(df_plot.index) / 8)))
     else:
-        ax.xaxis.set_major_locator(DayLocator())
+        ax2.xaxis.set_major_locator(DayLocator())
 
+    plt.sca(ax2) # X軸ラベルの回転は最後に実行
     plt.xticks(rotation=45, ha='right')
-    plt.grid(True, linestyle=':', alpha=0.6)
-    plt.legend(loc='upper left', fontsize=10)
+    
     plt.tight_layout()
 
     # 5. 画像をメモリ上のバイトストリームとして保存
@@ -688,6 +754,10 @@ def update_report_data():
     R1_short, S1_short = analysis_result['R1_short'], analysis_result['S1_short'] 
     ma200, bbw = analysis_result['MA200'], analysis_result['BBW'] 
     stoch_k_long, stoch_d_long = analysis_result['StochK_long'], analysis_result['StochD_long'] 
+    
+    # NEW: 出来高情報
+    volume, vma, volume_ratio = analysis_result['Volume'], analysis_result['VMA'], analysis_result['VolumeRatio']
+
 
     dominance = analysis_result['dominance'] # 優勢度
     strategy = analysis_result['strategy']
@@ -723,6 +793,8 @@ def update_report_data():
         f"🔥 RSI (14期間, 日足): {formatted_RSI}",
         f"📊 BB幅 (20, 日足): {formatted_BBW}",
         f"✨ Stochastics K/D (日足): K=`{stoch_k_long:,.2f}`, D=`{stoch_d_long:,.2f}`",
+        f"--- 出来高情報 (Volume) ---", # NEW
+        f"📈 最新出来高: `{volume:,.0f}` (平均VMA20比: `{volume_ratio:,.0f}%`)", # NEW
     ]
 
     prediction_lines = [f"• {tf}後予測: *{predictions[tf]}*" for tf in ["1h", "4h", "12h", "24h"]]
@@ -793,11 +865,14 @@ def update_report_data():
         logging.info("チャート画像を生成中...")
         chart_buffer = generate_chart_image(df_long_analyzed, analysis_result)
         
+        # NEW: 出来高情報をキャプションに追加
+        volume_status = "出来高急増" if analysis_result.get('VolumeRatio', 0) > 150 else "出来高平均的"
+        
         photo_caption = (
             f"📈 *BTC実践分析チャート ({LONG_INTERVAL}足)* 📉\n"
             f"📅 更新: `{last_updated_str}` (JST)\n" # JSTの更新時刻
             f"💰 現在価格: {formatted_current_price}\n"
-            f"🚨 *優勢度*: *{dominance}*\n"
+            f"🚨 *優勢度*: *{dominance}* ({volume_status})\n" # 出来高ステータスを追加
             f"🛡️ *推奨戦略*: {strategy}\n"
             f"_詳細は別途送信されるテキストレポートをご確認ください。_"
         )
