@@ -588,15 +588,23 @@ def generate_chart_image(df: pd.DataFrame, analysis_result: dict) -> io.BytesIO:
     
     required_cols = ['Close', 'High', 'Low', 'Volume', 'SMA_50', 'SMA_200', BBU_COL, BBL_COL, VMA_COL]
     
-    # NaN行を削除してから描画に渡す（描画エラーを防ぐため）。
     # 【修正】 VMA_COLは計算開始地点でNaN値を持つため、dropnaのsubsetから除外する。
     # プロットライブラリはNaN値を自動でスキップするため問題ない。
     df_plot = df.dropna(subset=['Close', 'SMA_50', 'Volume']).copy() 
     
+    # === 【NEW FIX: データの有効性チェックを追加】 ===
+    # NaN値の行を削除した結果、データフレームが空になった場合、カラムチェックに進むとエラーになるため、ここで中断
+    if df_plot.empty:
+        logging.error("❌ NaN値の行を削除した結果、プロット用のデータフレームが空になりました。チャート描画をスキップします。")
+        return io.BytesIO()
+    # ===============================================
+
     # 必要なカラムが全て存在するか確認
     # このチェックはdf_plot（dropna後）に対して行い、実行できない場合は空のバッファを返す。
     if not all(col in df_plot.columns for col in required_cols):
-        logging.error(f"チャート描画に必要なカラムの一部が不足しています: {required_cols}. 描画に必要なカラムが揃うまで待機します。")
+        # 実際にはdf_plotが空でない限りこのエラーは起きないはずだが、念のため保持
+        missing_cols = [col for col in required_cols if col not in df_plot.columns]
+        logging.error(f"チャート描画に必要なカラムの一部が不足しています: {missing_cols}. 描画に必要なカラムが揃うまで待機します。")
         return io.BytesIO()
 
     # === NEW: 出来高用のサブプロットを追加 (2段構成) ===
