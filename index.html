@@ -12,6 +12,7 @@
             font-family: 'Inter', sans-serif;
             background-color: #f0f4f8; /* Light background */
         }
+        .container { max-width: 1280px; margin: 0 auto; }
         .card {
             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08); /* Stronger shadow */
             transition: transform 0.2s, box-shadow 0.2s;
@@ -32,11 +33,15 @@
             0% { transform: rotate(0deg); }
             100% { transform: rotate(360deg); }
         }
+        /* バックテスト結果の色分け */
+        .positive { color: #10b981; } /* Tailwind green-500 */
+        .negative { color: #ef4444; } /* Tailwind red-500 */
+        .neutral { color: #6b7280; } /* Tailwind gray-500 */
     </style>
 </head>
 <body class="p-8">
 
-    <div class="max-w-6xl mx-auto">
+    <div class="container">
         <header class="mb-8">
             <h1 class="text-4xl font-extrabold text-gray-900 flex items-center">
                 <span class="text-yellow-500 mr-3">₿</span> {{ title }}
@@ -44,11 +49,14 @@
             <p class="text-gray-500 mt-1">リアルタイム分析とバックテストによる戦略検証</p>
         </header>
 
-        <div id="loading-state" class="text-center py-20"> <div class="loading mx-auto mb-4"></div>
-            <p class="text-gray-600 font-medium">データ取得・分析実行中... しばらくお待ちください。</p>
+        <div id="loading-state" class="text-center py-20">
+            <div class="loading mx-auto mb-4"></div>
+            <p class="text-gray-600 font-medium" id="loading-text">データ取得・分析実行中... しばらくお待ちください。</p>
         </div>
 
-        <div id="metric-cards" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8 hidden"> <div class="card bg-gray-800 text-white p-5 rounded-xl">
+        <div id="metric-cards" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8 hidden">
+
+            <div class="card bg-gray-800 text-white p-5 rounded-xl">
                 <h3 class="text-lg font-semibold opacity-90">現在価格 (USD)</h3>
                 <p id="current-price" class="text-4xl font-bold mt-2">$ N/A</p>
                 <p id="last-updated" class="text-sm opacity-70 mt-1">最終更新: N/A</p>
@@ -57,7 +65,7 @@
             <div id="bias-card" class="card bg-blue-600 text-white p-5 rounded-xl">
                 <h3 class="text-lg font-semibold opacity-90">中期バイアス (日足)</h3>
                 <p id="bias" class="text-4xl font-bold mt-2">N/A</p>
-                <p class="text-sm opacity-70 mt-1">トレンド傾向</p>
+                <p id="dominance" class="text-sm opacity-70 mt-1">トレンド傾向</p>
             </div>
 
             <div id="status-card" class="card bg-green-500 text-white p-5 rounded-xl">
@@ -112,9 +120,20 @@
 
         // ダッシュボードを更新するメイン関数
         function updateDashboard(data) {
-            // ローディング状態の解除とダッシュボードの表示
-            document.getElementById('loading-state').classList.add('hidden');
-            document.getElementById('metric-cards').classList.remove('hidden');
+            
+            // ローディング状態の制御
+            const loadingState = document.getElementById('loading-state');
+            const metricCards = document.getElementById('metric-cards');
+            const loadingText = document.getElementById('loading-text');
+
+            if (data.scheduler_status === '初期化中' || data.scheduler_status.includes('分析実行中')) {
+                loadingState.classList.remove('hidden');
+                metricCards.classList.add('hidden');
+                loadingText.textContent = data.scheduler_status;
+            } else {
+                loadingState.classList.add('hidden');
+                metricCards.classList.remove('hidden');
+            }
 
             // 1. 基本情報の更新
             const priceValue = data.current_price || 0;
@@ -124,26 +143,27 @@
             document.getElementById('scheduler-status').textContent = data.scheduler_status;
             document.getElementById('data-range').textContent = data.data_range;
             document.getElementById('strategy').textContent = data.strategy;
+            document.getElementById('dominance').textContent = data.dominance;
 
             // 2. バイアスカードの更新
             const bias = data.bias || 'N/A';
             const biasCard = document.getElementById('bias-card');
-            biasCard.classList.remove(...Object.values(BIAS_COLORS)); // 既存の色を全て削除
-            biasCard.classList.add(BIAS_COLORS[bias] || BIAS_COLORS['N/A']); // 新しい色を設定
+            biasCard.classList.remove(...Object.values(BIAS_COLORS));
+            biasCard.classList.add(BIAS_COLORS[bias] || BIAS_COLORS['N/A']);
             document.getElementById('bias').textContent = bias;
 
             // 3. 予測リストの更新
             const predictions = data.predictions || {};
             const predictionList = document.getElementById('prediction-list');
-            predictionList.innerHTML = ''; // リストをクリア
+            predictionList.innerHTML = ''; 
 
-            if (Object.keys(predictions).length > 0) {
+            if (Object.keys(predictions).length > 0 && data.scheduler_status === '稼働中') {
                 document.getElementById('predictions-area').classList.remove('hidden');
                 for (const tf in predictions) {
                     const item = document.createElement('li');
                     item.className = 'flex justify-between items-center text-gray-700';
                     item.innerHTML = `
-                        <span class="font-semibold">${tf}後 (${tf.slice(0, -1)}h)</span>
+                        <span class="font-semibold">${tf}後予測</span>
                         <span class="font-bold text-lg">${predictions[tf]}</span>
                     `;
                     predictionList.appendChild(item);
@@ -155,76 +175,73 @@
             // 4. バックテスト結果の更新
             const backtestResults = data.backtest || {};
             
-            // リターン率のスタイル設定
             const btReturnElement = document.getElementById('bt-return');
-            if (backtestResults.total_return !== undefined) {
-                const totalReturnRate = backtestResults.total_return;
-                btReturnElement.textContent = `${totalReturnRate}%`;
-                btReturnElement.classList.remove('text-red-500', 'text-green-500', 'text-gray-400');
-                if (totalReturnRate < 0) {
-                    btReturnElement.classList.add('text-red-500');
-                } else if (totalReturnRate > 0) {
-                    btReturnElement.classList.add('text-green-500');
-                }
-            } else {
-                 btReturnElement.textContent = 'N/A';
-                 btReturnElement.classList.add('text-gray-400');
-            }
+            btReturnElement.classList.remove('negative', 'positive', 'neutral'); // クラスをリセット
 
-            if (backtestResults && backtestResults.trades !== undefined) {
-                document.getElementById('bt-pf').textContent = backtestResults.profit_factor || 'N/A';
-                document.getElementById('bt-dd').textContent = `${backtestResults.max_drawdown || 0}%`;
-                document.getElementById('bt-trades').textContent = `${backtestResults.trades} (${backtestResults.win_rate}%)`;
-            } else if (backtestResults && backtestResults.error) {
-                // エラー表示
-                document.getElementById('bt-return').textContent = 'エラー';
+            if (backtestResults.error) {
+                btReturnElement.textContent = 'エラー';
+                btReturnElement.classList.add('negative');
                 document.getElementById('bt-pf').textContent = 'N/A';
                 document.getElementById('bt-dd').textContent = 'N/A';
                 document.getElementById('bt-trades').textContent = backtestResults.error;
+            } else if (backtestResults.final_capital) {
+                const totalReturnRate = backtestResults.total_return;
+                btReturnElement.textContent = `${totalReturnRate}%`;
+                
+                if (totalReturnRate < 0) {
+                    btReturnElement.classList.add('negative');
+                } else if (totalReturnRate > 0) {
+                    btReturnElement.classList.add('positive');
+                } else {
+                    btReturnElement.classList.add('neutral');
+                }
+                
+                document.getElementById('bt-pf').textContent = backtestResults.profit_factor || 'N/A';
+                document.getElementById('bt-dd').textContent = `${backtestResults.max_drawdown || 0}%`;
+                document.getElementById('bt-trades').textContent = `${backtestResults.trades || 0} (${backtestResults.win_rate || 0}%)`;
             } else {
-                 // データ不足表示
+                 // データ不足 / 実行待ち
+                btReturnElement.textContent = 'N/A';
+                btReturnElement.classList.add('neutral');
                 document.getElementById('bt-pf').textContent = 'N/A';
                 document.getElementById('bt-dd').textContent = 'N/A';
-                document.getElementById('bt-trades').textContent = 'N/A';
+                document.getElementById('bt-trades').textContent = 'データ不足 / 実行待ち';
             }
         }
 
-        // 10秒ごとにステータスAPIをポーリング
+        // 5秒ごとにステータスAPIをポーリング (間隔を短縮)
         async function fetchStatus() {
             try {
-                // 初回ロード時はローディング状態を解除しない
-                if (!document.getElementById('metric-cards').classList.contains('hidden')) {
-                    document.getElementById('loading-state').classList.add('hidden');
-                }
-                
                 const response = await fetch('/status');
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
                 const data = await response.json();
                 updateDashboard(data);
             } catch (error) {
                 console.error('ステータス取得エラー:', error);
-                // エラー発生時はローディング状態に戻す
-                document.getElementById('loading-state').classList.remove('hidden');
-                document.getElementById('metric-cards').classList.add('hidden');
-                
-                document.getElementById('scheduler-status').textContent = '通信エラー';
-                document.getElementById('bias-card').classList.remove(...Object.values(BIAS_COLORS));
-                document.getElementById('bias-card').classList.add(BIAS_COLORS['データ不足']);
-                document.getElementById('strategy').textContent = 'サーバーとの接続に失敗しました。BOTの実行状態を確認してください。';
-                
+                // エラー発生時はダッシュボードを通信エラー状態に更新
+                updateDashboard({
+                    scheduler_status: '通信エラー',
+                    strategy: 'サーバーとの接続に失敗しました。BOTの実行状態を確認してください。',
+                    current_price: 0,
+                    bias: 'N/A',
+                    last_updated: '接続失敗',
+                    data_range: 'N/A',
+                    dominance: 'N/A',
+                    predictions: {},
+                    backtest: {'error': '通信エラー'}
+                });
             }
         }
 
         // ページロード時の初期化
         document.addEventListener('DOMContentLoaded', () => {
-            // 初回はローディング画面を表示
-            document.getElementById('loading-state').classList.remove('hidden');
-            document.getElementById('metric-cards').classList.add('hidden');
-
             // 初回ポーリング
             fetchStatus(); 
             
-            // 10秒ごとのポーリングを開始
-            setInterval(fetchStatus, 10000); 
+            // 5秒ごとのポーリングを開始
+            setInterval(fetchStatus, 5000); // 10秒から5秒に変更
         });
 
     </script>
