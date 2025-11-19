@@ -347,6 +347,9 @@ def generate_strategy(df_long: pd.DataFrame, df_short: pd.DataFrame) -> dict:
         price = df_long['Close'].iloc[-1] if not df_long.empty and 'Close' in df_long.columns else 0
         return {
             'price': price, 'P': price, 'R1': price * 1.01, 'S1': price * 0.99, 'MA50': price, 'RSI': 50,
+            'R2_long': price * 1.02, 'S2_long': price * 0.98, 'R1_short': price * 1.005, 'S1_short': price * 0.995, # NEW
+            'MA200': price, 'BBW': 0, 'StochK_long': 50, 'StochD_long': 50, # NEW
+            'ShortRSI': 50, 'ShortMACDH': 0, 'ShortStochK': 50, # NEW
             'bias': 'データ不足', 'dominance': 'N/A', # 初期値
             'strategy': '分析に必要な十分な期間のデータが揃っていません。',
             'details': ['分析に必要な十分な期間のデータが揃っていません。'],
@@ -360,14 +363,21 @@ def generate_strategy(df_long: pd.DataFrame, df_short: pd.DataFrame) -> dict:
     ma50 = latest['SMA_50']
     ma200 = latest['SMA_200']
     rsi = latest['RSI_14']
+    bbw = latest['BBW_20_2.0_2.0'] if 'BBW_20_2.0_2.0' in latest else np.nan # ボリンジャーバンド幅 (BBW)
+    stoch_k_long = latest['STOCHk_14_3_3']
+    stoch_d_long = latest['STOCHd_14_3_3']
 
     # ピボットポイントの計算 (日足データでクラシックピボットを使用)
-    P_long, R1_long, S1_long, _, _ = calculate_pivot_levels(df_long, 'Classic')
+    P_long, R1_long, S1_long, R2_long, S2_long = calculate_pivot_levels(df_long, 'Classic') # R2, S2も取得
 
     # 短期（4時間足）の分析
     latest_short = df_short_clean.iloc[-1]
-    P_short, R1_short, S1_short, _, _ = calculate_pivot_levels(df_short, 'Fibonacci')
+    P_short, R1_short, S1_short, R2_short, S2_short = calculate_pivot_levels(df_short, 'Fibonacci')
     short_ma50 = latest_short['SMA_50']
+    short_rsi = latest_short['RSI_14'] # 4h RSI
+    short_macd_h = latest_short['MACDh_12_26_9'] # 4h MACD Hist
+    short_stoch_k = latest_short['STOCHk_14_3_3'] # 4h Stoch K
+
 
     # 総合バイアスと戦略の決定
     bias = "中立"
@@ -385,7 +395,7 @@ def generate_strategy(df_long: pd.DataFrame, df_short: pd.DataFrame) -> dict:
         bear_score += 2
 
     if price > ma50 * 1.005:
-        details.append(f"• *中期トレンド*: 価格がMA50 (`{ma50:,.2f}`) を明確に上回り、中期的に強い強気トレンドです。")
+        details.append(f"• *中期トレンド*: 価格がMA50 (`{ma50:,.2f}`) を明確に上回り、中期的に強い強気トレンドが優勢です。")
         bull_score += 1
     elif price < ma50 * 0.995:
         details.append(f"• *中期トレンド*: 価格がMA50 (`{ma50:,.2f}`) を明確に下回り、中期的な弱気トレンドが優勢です。")
@@ -395,44 +405,69 @@ def generate_strategy(df_long: pd.DataFrame, df_short: pd.DataFrame) -> dict:
 
     # --- 2. モメンタムシグナル (MACDとRSI 50ライン) ---
     if latest['MACD_12_26_9'] > latest['MACDs_12_26_9']:
-        details.append("• *モメンタム*: MACDがシグナルラインの上にあり、モメンタムは*上昇*傾向です。")
+        details.append("• *モメンタム (日足)*: MACDがシグナルラインの上にあり、モメンタムは*上昇*傾向です。")
         bull_score += 1
     elif latest['MACD_12_26_9'] < latest['MACDs_12_26_9']:
-        details.append("• *モメンタム*: MACDがシグナルラインの下にあり、モメンタムは*下降*傾向です。")
+        details.append("• *モメンタム (日足)*: MACDがシグナルラインの下にあり、モメンタムは*下降*傾向です。")
         bear_score += 1
 
     # --- 3. 過熱感 (RSI) ---
     if rsi > 70:
-        details.append(f"• *RSI*: 70 (`{rsi:,.2f}`) を超え、*買われすぎ*を示唆。短期的な調整（利確売り）に警戒。")
+        details.append(f"• *RSI (日足)*: 70 (`{rsi:,.2f}`) を超え、*買われすぎ*を示唆。短期的な調整（利確売り）に警戒。")
         bear_score += 1 # 買われすぎは短期的な弱気要因
     elif rsi < 30:
-        details.append(f"• *RSI*: 30 (`{rsi:,.2f}`) を下回り、*売られすぎ*を示唆。短期的な反発（押し目買い）のチャンス。")
+        details.append(f"• *RSI (日足)*: 30 (`{rsi:,.2f}`) を下回り、*売られすぎ*を示唆。短期的な反発（押し目買い）のチャンス。")
         bull_score += 1 # 売られすぎは短期的な強気要因
     elif rsi > 50:
-        details.append(f"• *RSI*: 50 (`{rsi:,.2f}`) を上回り、強いモメンタムが*維持*されています。")
+        details.append(f"• *RSI (日足)*: 50 (`{rsi:,.2f}`) を上回り、強いモメンタムが*維持*されています。")
     else:
-        details.append(f"• *RSI*: 50 (`{rsi:,.2f}`) を下回り、弱いモメンタムが*継続*しています。")
+        details.append(f"• *RSI (日足)*: 50 (`{rsi:,.2f}`) を下回り、弱いモメンタムが*継続*しています。")
+        
+    # --- 4. Stochastics (日足) ---
+    if stoch_k_long > 80 and stoch_d_long > 80:
+        details.append("• *ストキャスティクス (日足)*: 買われすぎ水準。日足の*利確売り*に注意が必要です。")
+        bear_score += 0.5
+    elif stoch_k_long < 20 and stoch_d_long < 20:
+        details.append("• *ストキャスティクス (日足)*: 売られすぎ水準。日足の*反発の可能性*があります。")
+        bull_score += 0.5
+        
+    # --- 5. Volatility Analysis (日足 BBW) ---
+    if bbw < 5:
+        details.append(f"• *ボラティリティ (日足)*: BB幅 (`{bbw:,.2f}%`) が極端に狭く、*大相場前のエネルギー蓄積*を示唆します（ブレイクアウトに注意）。")
+    elif bbw > 15:
+        details.append(f"• *ボラティリティ (日足)*: BB幅 (`{bbw:,.2f}%`) が広く、*ボラティリティが高止まり*しており、調整（レンジ回帰）リスクがあります。")
+    else:
+        details.append(f"• *ボラティリティ (日足)*: BB幅 (`{bbw:,.2f}%`) は平均的で、通常のトレンド継続またはレンジを想定します。")
 
-    # --- 4. 総合バイアスの決定 ---
+    # --- 6. Short-term Analysis (4h) ---
+    details.append(f"• *短期RSI (4h)*: `{short_rsi:,.2f}`。{( '70超えで買われすぎ' if short_rsi > 70 else '30未満で売られすぎ' if short_rsi < 30 else '中立水準')}")
+    if short_macd_h > 0:
+        details.append(f"• *短期モメンタム (4h MACD Hist)*: ポジティブ (`{short_macd_h:,.2f}`)。短期的には*上昇圧力が強い*です。")
+        bull_score += 0.5
+    elif short_macd_h < 0:
+        details.append(f"• *短期モメンタム (4h MACD Hist)*: ネガティブ (`{short_macd_h:,.2f}`)。短期的には*下降圧力が強い*です。")
+        bear_score += 0.5
+
+    # --- 7. 総合バイアスの決定 ---
     score_diff = bull_score - bear_score
     
     if score_diff >= 3:
         dominance = "明確なロング優勢 🚀"
         bias = "強い上昇"
-    elif score_diff == 2:
+    elif score_diff >= 1:
         dominance = "ロング優勢 📈"
         bias = "上昇"
     elif score_diff <= -3:
         dominance = "明確なショート優勢 💥"
         bias = "強い下降"
-    elif score_diff == -2:
+    elif score_diff <= -1:
         dominance = "ショート優勢 📉"
         bias = "下降"
     else:
         dominance = "中立/レンジ ↔️"
         bias = "レンジ/中立"
 
-    # --- 5. 総合戦略の決定 ---
+    # --- 8. 総合戦略の決定 (RSIの過熱感を考慮) ---
     R1_long_str = f"`${R1_long:,.2f}`"
     S1_long_str = f"`${S1_long:,.2f}`"
     P_long_str = f"`${P_long:,.2f}`"
@@ -441,20 +476,28 @@ def generate_strategy(df_long: pd.DataFrame, df_short: pd.DataFrame) -> dict:
 
 
     if dominance in ["明確なロング優勢 🚀", "ロング優勢 📈"]:
-        if latest_short['Close'] > short_ma50: # 短期も上向き
+        # RSIが買われすぎ水準の場合、短期調整を警戒
+        if rsi > 70 or short_rsi > 70: 
+            strategy = f"🚨 *短期調整警戒のロング戦略*。中期はロング優勢だが、RSIが買われすぎ水準。短期的な調整（利確売り）を警戒し、日足S1 ({S1_long_str}) での押し目買いを待つ。"
+        elif latest_short['Close'] > short_ma50: # 短期も上向き
             strategy = f"🌟 *最強のロング戦略*。日足S1 ({S1_long_str}) または4h S1 ({S1_short_str}) への*押し目買い*を積極的に検討。"
         else:
             strategy = f"ロング優勢の押し目買い戦略。日足P ({P_long_str}) への短期的な反落時が主な買い場。"
+            
     elif dominance in ["明確なショート優勢 💥", "ショート優勢 📉"]:
-        if latest_short['Close'] < short_ma50: # 短期も下向き
+        # RSIが売られすぎ水準の場合、短期反発を警戒 (現在のレポートの状況を反映)
+        if rsi < 30 or short_rsi < 30: 
+            strategy = f"💡 *短期反発警戒のショート戦略*。中期はショート優勢だが、RSIが売られすぎ水準。短期的な反発（押し目買い）を待ってから、日足R1 ({R1_long_str}) または4h R1 ({R1_short_str}) への*戻り売り*を検討。"
+        elif latest_short['Close'] < short_ma50: # 短期も下向き
             strategy = f"💥 *最強のショート戦略*。日足R1 ({R1_long_str}) または4h R1 ({R1_short_str}) への*戻り売り*を積極的に検討。"
         else:
             strategy = f"ショート優勢の戻り売り戦略。日足P ({P_long_str}) への短期的な上昇時が主な売り場。"
+            
     elif dominance == "中立/レンジ ↔️":
         BBB_COL = 'BBB_20_2.0_2.0' 
         bbb = latest[BBB_COL] if BBB_COL in latest else 100 
 
-        if bbb < 10: # ボラティリティ圧縮
+        if bbw < 5: # ボラティリティ圧縮
              strategy = f"ボラティリティ圧縮中。日足R1 ({R1_long_str}) / S1 ({S1_long_str}) の*ブレイクアウト待ち*。"
         else:
              strategy = f"レンジ取引。日足S1 ({S1_long_str}) 付近で買い、日足R1 ({R1_long_str}) 付近で売り。"
@@ -473,7 +516,12 @@ def generate_strategy(df_long: pd.DataFrame, df_short: pd.DataFrame) -> dict:
 
     return {
         'price': price,
-        'P': P_long, 'R1': R1_long, 'S1': S1_long, 'MA50': ma50, 'RSI': rsi,
+        'P': P_long, 'R1': R1_long, 'S1': S1_long, 
+        'R2_long': R2_long, 'S2_long': S2_long, # NEW
+        'R1_short': R1_short, 'S1_short': S1_short, # NEW
+        'MA50': ma50, 'MA200': ma200, 'RSI': rsi, 'BBW': bbw, # NEW
+        'StochK_long': stoch_k_long, 'StochD_long': stoch_d_long, # NEW
+        'ShortRSI': short_rsi, 'ShortMACDH': short_macd_h, 'ShortStochK': short_stoch_k, # NEW
         'bias': bias,
         'dominance': dominance, # 優勢度を追加
         'strategy': strategy,
@@ -483,6 +531,7 @@ def generate_strategy(df_long: pd.DataFrame, df_short: pd.DataFrame) -> dict:
 
 
 def generate_chart_image(df: pd.DataFrame, analysis_result: dict) -> io.BytesIO:
+# ... (変更なし、省略) ...
     """
     終値と主要なテクニカル指標を含むチャート画像を生成します。
     """
@@ -626,26 +675,45 @@ def update_report_data():
     # 6. レポートの整形 (改行と優勢度の強調)
     price = analysis_result['price']
     P, R1, S1, ma50, rsi = analysis_result['P'], analysis_result['R1'], analysis_result['S1'], analysis_result['MA50'], analysis_result['RSI']
+    R2_long, S2_long = analysis_result['R2_long'], analysis_result['S2_long'] # NEW
+    R1_short, S1_short = analysis_result['R1_short'], analysis_result['S1_short'] # NEW
+    ma200, bbw = analysis_result['MA200'], analysis_result['BBW'] # NEW
+    stoch_k_long, stoch_d_long = analysis_result['StochK_long'], analysis_result['StochD_long'] # NEW
+
     dominance = analysis_result['dominance'] # 優勢度
     strategy = analysis_result['strategy']
-    details = analysis_result['details']
+    details = analysis_result['details'] 
     predictions = analysis_result['predictions']
 
     # 価格をカンマ区切りにフォーマット
     formatted_current_price = f"`${price:,.2f}`"
     formatted_P = f"`${P:,.2f}`"
-    formatted_R1 = f"`${R1:,.2f}`"
-    formatted_S1 = f"`${S1:,.2f}`"
+    formatted_R1_long = f"`${R1:,.2f}`"
+    formatted_S1_long = f"`${S1:,.2f}`"
+    formatted_R2_long = f"`${R2_long:,.2f}`" # NEW
+    formatted_S2_long = f"`${S2_long:,.2f}`" # NEW
+    formatted_R1_short = f"`${R1_short:,.2f}`" # NEW
+    formatted_S1_short = f"`${S1_short:,.2f}`" # NEW
     formatted_MA50 = f"`${ma50:,.2f}`"
+    formatted_MA200 = f"`${ma200:,.2f}`" # NEW
     formatted_RSI = f"`{rsi:,.2f}`"
+    formatted_BBW = f"`{bbw:,.2f}%`" # NEW
 
     price_analysis = [
         f"💰 *現在価格 (BTC-USD)*: {formatted_current_price}",
         f"🟡 *ピボットポイント (P, 日足)*: {formatted_P}",
-        f"🔼 *主要レジスタンス (R1, 日足)*: {formatted_R1}",
-        f"🔽 *主要サポート (S1, 日足)*: {formatted_S1}",
-        f"💡 *中期トレンド転換点 (MA50, 日足)*: {formatted_MA50}",
-        f"🔥 *RSI (14期間, 日足)*: {formatted_RSI}"
+        f"💡 *中期トレンド転換点 (MA50)*: {formatted_MA50}",
+        f"🐻 *長期トレンド基準 (MA200)*: {formatted_MA200}",
+        f"--- 日足 主要レベル (Classic Pivot) ---",
+        f"🔼 R1: {formatted_R1_long}, R2: {formatted_R2_long}", # R2追加
+        f"🔽 S1: {formatted_S1_long}, S2: {formatted_S2_long}", # S2追加
+        f"--- 4h 短期主要レベル (Fibonacci Pivot) ---",
+        f"⬆️ R1 (4h): {formatted_R1_short}", # 4h R1追加
+        f"⬇️ S1 (4h): {formatted_S1_short}", # 4h S1追加
+        f"--- 主要オシレーター指標 ---",
+        f"🔥 RSI (14期間, 日足): {formatted_RSI}",
+        f"📊 BB幅 (20, 日足): {formatted_BBW}", # BB幅追加
+        f"✨ Stochastics K/D (日足): K=`{stoch_k_long:,.2f}`, D=`{stoch_d_long:,.2f}`", # NEW
     ]
 
     prediction_lines = [f"• {tf}後予測: *{predictions[tf]}*" for tf in ["1h", "4h", "12h", "24h"]]
