@@ -165,7 +165,7 @@ def fetch_btc_ohlcv_data(period: str, interval: str) -> pd.DataFrame:
                 logging.error("❌ 最大リトライ回数に達しました。データ取得を中止し、空のDataFrameを返します。")
                 return pd.DataFrame() # 空のDataFrameを返して呼び出し元で処理させる
 
-# === 【修正点: リアルタイム価格取得関数】 ===
+# === リアルタイム価格取得関数 ===
 def fetch_current_price() -> float:
     """
     yfinanceからBTC-USDの最新の価格をリアルタイムで取得します。
@@ -361,8 +361,6 @@ def generate_strategy(df_long: pd.DataFrame, df_short: pd.DataFrame) -> dict:
     latest = df_long_clean.iloc[-1]
     
     # 日足の指標値
-    # ※ priceは、この関数の外でリアルタイム価格に置き換えられる可能性がありますが、
-    # ここでは分析に使用する日足の終値として計算を続けます。
     price = latest['Close'] 
     ma50 = latest['SMA_50']
     ma200 = latest['SMA_200']
@@ -482,7 +480,7 @@ def generate_strategy(df_long: pd.DataFrame, df_short: pd.DataFrame) -> dict:
     }
 
     return {
-        # ここで返されるpriceは、分析に使用した日足の終値です。（後でリアルタイム価格に上書きされる可能性あり）
+        # ここで返されるpriceは、分析に使用した日足の終値です。
         'price': price,
         'P': P_long, 'R1': R1_long, 'S1': S1_long, 'MA50': ma50, 'RSI': rsi,
         'bias': bias,
@@ -598,7 +596,7 @@ def update_report_data():
     logging.info("スケジュールされたレポート更新タスク開始（実践分析モード）...")
     
     # 2. データ取得 (日足と4時間足)
-    # 【修正点A: リアルタイム価格の取得】
+    # 【リアルタイム価格の取得】
     realtime_price = fetch_current_price()
 
     df_long = fetch_btc_ohlcv_data(LONG_PERIOD, LONG_INTERVAL)
@@ -608,7 +606,6 @@ def update_report_data():
     if df_long.empty or df_short.empty:
         logging.error("致命的エラー: データ取得に失敗したため、レポートを生成できません。")
         # --- エラー時のグローバルデータ更新 ---
-        # リアルタイム価格が取れていればそれを表示
         error_price = realtime_price if realtime_price > 0 else 0
         global_data.update({
             'scheduler_status': 'データ取得エラー',
@@ -658,9 +655,11 @@ def update_report_data():
     # 5. 戦略と予測の生成
     analysis_result = generate_strategy(df_long_analyzed, df_short_analyzed)
 
-    # 【修正点B: リアルタイム価格を分析結果に反映】
+    # **【修正点】リアルタイム価格の適用とソースの決定**
+    price_source = "OHLCV 終値 (最新の足)"
     if realtime_price > 0:
-        analysis_result['price'] = realtime_price
+        analysis_result['price'] = realtime_price # リアルタイム価格で上書き
+        price_source = "リアルタイム単価 (1分足)" # ソースをリアルタイムに設定
 
     # 6. グローバル状態の最終更新
     price = analysis_result['price']
@@ -688,7 +687,7 @@ def update_report_data():
     formatted_RSI = f"`{rsi:,.2f}`"
 
     price_analysis = [
-        f"💰 *現在価格 (BTC-USD)*: {formatted_current_price}", # <-- 最新のリアルタイム価格が反映される
+        f"💰 *現在価格 (BTC-USD)*: {formatted_current_price} (_{price_source}_)", # <-- ソース情報を含めて通知
         f"🟡 *ピボットポイント (P, 日足)*: {formatted_P}",
         f"🔼 *主要レジスタンス (R1, 日足)*: {formatted_R1}",
         f"🔽 *主要サポート (S1, 日足)*: {formatted_S1}",
@@ -741,7 +740,6 @@ def update_report_data():
     # 8. 画像生成と通知の実行
     try:
         logging.info("チャート画像を生成中...")
-        # チャートには最新価格が反映された analysis_result を渡す
         chart_buffer = generate_chart_image(df_long_analyzed, analysis_result)
         
         photo_caption = (
