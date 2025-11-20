@@ -189,17 +189,23 @@ def fetch_current_price() -> float:
             if df_1h.empty or 'Close' not in df_1h.columns or len(df_1h) == 0:
                 raise ValueError("1時間足のデータが空または不十分です。")
             
-            # 最新の終値を取得
+            # 最新の終値を取得 (Seriesから float 値を確実に取得)
             latest_close = df_1h['Close'].iloc[-1]
             
-            if latest_close > 0:
+            # latest_close が Series の場合 (稀なケース)、float に変換
+            if isinstance(latest_close, pd.Series):
+                latest_close = latest_close.iloc[0]
+
+            # 価格が float または numpy.float であることを確認し、正の値かチェック
+            if isinstance(latest_close, (float, np.float_)) and latest_close > 0:
                 logging.info(f"✅ 1時間足の最新終値取得成功: ${latest_close:,.2f}")
                 return round(latest_close, 2)
-            
-            # 価格が0以下の場合はエラー
-            raise ValueError("取得した最新終値が不正な値です (0以下)。")
+            else:
+                # 取得した値が float でないか、または0以下の場合
+                raise ValueError(f"取得した最新終値が不正な値です: {latest_close}")
 
         except Exception as e:
+            # Pandasの比較エラーを含む、その他のエラーを捕捉
             logging.warning(f"⚠️ Yfinanceからの1時間足価格取得失敗 (試行 {attempt + 1}/{max_retries}): {e}")
             
         if attempt < max_retries - 1:
@@ -639,6 +645,20 @@ def update_report_data():
         # データ不足チェック
         if df_long.empty or df_short.empty:
             raise ValueError("データ取得に失敗したか、データが空です。Yfinanceの接続またはレート制限を確認してください。")
+        
+        # リアルタイム価格が取得できなかった場合のフォールバック処理を強化
+        price_source = "OHLCV 終値 (最新の足)"
+        if realtime_price <= 0 and not df_long.empty:
+            # 日足データから最新の終値を取得してフォールバック
+            realtime_price = df_long['Close'].iloc[-1].round(2)
+            price_source = "日足データ終値 (フォールバック)"
+            logging.warning(f"⚠️ リアルタイム価格取得失敗。日足終値 ${realtime_price:,.2f} を使用して続行します。")
+        elif realtime_price > 0:
+            price_source = "リアルタイム単価 (1時間足)" 
+        else:
+            # どちらも取得できなかった場合
+            raise ValueError("価格データの取得に失敗し、フォールバックも機能しませんでした。")
+
             
         # 3. テクニカル分析
         global_data['scheduler_status'] = '分析実行中'
@@ -659,11 +679,8 @@ def update_report_data():
         # 5. 戦略と予測の生成
         analysis_result = generate_strategy(df_long_analyzed, df_short_analyzed)
 
-        # リアルタイム価格の適用とソースの決定
-        price_source = "OHLCV 終値 (最新の足)"
-        if realtime_price > 0:
-            analysis_result['price'] = realtime_price # リアルタイム価格で上書き
-            price_source = "リアルタイム単価 (1時間足)" 
+        # リアルタイム価格の適用
+        analysis_result['price'] = realtime_price
             
         # 6. グローバル状態の最終更新
         price = analysis_result['price']
