@@ -63,7 +63,7 @@ LONG_INTERVAL = "1d"
 SHORT_PERIOD = "30d" # 4時間足（4h）分析用 - 短期戦略
 SHORT_INTERVAL = "4h"
 BACKTEST_CAPITAL = 100000 # バックテストの初期資本
-SCHEDULER_INTERVAL_HOURS = 6 # スケジューラー実行間隔 <--- 再追加
+SCHEDULER_INTERVAL_HOURS = 6 # スケジューラー実行間隔
 # ===============================================
 
 # グローバル状態（ダッシュボード表示用）
@@ -167,35 +167,48 @@ def fetch_btc_ohlcv_data(period: str, interval: str) -> pd.DataFrame:
                 logging.error("❌ 最大リトライ回数に達しました。データ取得を中止し、空のDataFrameを返します。")
                 return pd.DataFrame() # 空のDataFrameを返して呼び出し元で処理させる
 
-# === リアルタイム価格取得関数 (リトライ機能付き) ===
+# === リアルタイム価格取得関数 (リトライ機能付き) - 安定化のため1時間足を使用 ===
 def fetch_current_price() -> float:
     """
     yfinanceからBTC-USDの最新の価格をリアルタイムで取得します（リトライ付き）。
+    安定性のために1時間足の最新終値を使用します。
     """
     max_retries = 3
+    
+    # 期間を2日、間隔を1時間に変更して安定性を向上
+    INTERVAL_1H = "1h"
+    PERIOD_2D = "2d" 
+    
     for attempt in range(max_retries):
         try:
-            logging.info(f"リアルタイム価格取得中... (試行 {attempt + 1}/{max_retries})")
-            # 1分足の最新のデータを取得
-            df = yf.download(TICKER, period="1m", interval="1m", progress=False, auto_adjust=True, timeout=5)
+            logging.info(f"1時間足の最新終値を取得中 (ソース: Yfinance/{INTERVAL_1H})... (試行 {attempt + 1}/{max_retries})")
             
-            if not df.empty and 'Close' in df.columns and len(df) > 0:
-                # 最新のClose価格を返す
-                current_price = df['Close'].iloc[-1]
-                logging.info(f"✅ リアルタイム価格取得成功: ${current_price:,.2f}")
-                return round(current_price, 2)
-            else:
-                raise ValueError("取得したデータが空または不十分です。")
+            # yfinance.downloadを使用して1時間足データを取得
+            df_1h = yf.download(TICKER, period=PERIOD_2D, interval=INTERVAL_1H, progress=False, auto_adjust=True)
+            
+            if df_1h.empty or 'Close' not in df_1h.columns or len(df_1h) == 0:
+                raise ValueError("1時間足のデータが空または不十分です。")
+            
+            # 最新の終値を取得
+            latest_close = df_1h['Close'].iloc[-1]
+            
+            if latest_close > 0:
+                logging.info(f"✅ 1時間足の最新終値取得成功: ${latest_close:,.2f}")
+                return round(latest_close, 2)
+            
+            # 価格が0以下の場合はエラー
+            raise ValueError("取得した最新終値が不正な値です (0以下)。")
 
         except Exception as e:
-            logging.warning(f"⚠️ リアルタイム価格取得失敗 (試行 {attempt + 1}/{max_retries}): {e}")
-            if attempt < max_retries - 1:
-                wait_time = 2 ** attempt * 2 + random.uniform(0, 1) # 2, 4秒待機 (ランダムジッター追加)
-                time.sleep(wait_time)
-                continue
-            else:
-                logging.error("❌ リアルタイム価格取得の最大リトライ回数に達しました。0.0を返します。")
-                return 0.0
+            logging.warning(f"⚠️ Yfinanceからの1時間足価格取得失敗 (試行 {attempt + 1}/{max_retries}): {e}")
+            
+        if attempt < max_retries - 1:
+            wait_time = 2 ** attempt * 2 + random.uniform(0, 1) # 2, 4秒待機 (ランダムジッター追加)
+            time.sleep(wait_time)
+            continue
+        else:
+            logging.error("❌ 1時間足価格取得の最大リトライ回数に達しました。0.0を返します。")
+            return 0.0
 # =======================================
 
 def analyze_data(df: pd.DataFrame) -> pd.DataFrame:
@@ -217,14 +230,13 @@ def analyze_data(df: pd.DataFrame) -> pd.DataFrame:
     logging.info("✅ テクニカル指標の計算完了。")
     return df
 
-# === ピボットポイントの計算関数を強化 ===
+# === ピボットポイントの計算関数 ===
 def calculate_pivot_levels(df: pd.DataFrame, pivot_type: str = 'Classic') -> tuple[float, float, float, float, float]:
     """
     前日のOHLCデータから指定されたタイプのピボットポイントを算出します。
     返り値: P, R1, S1, R2, S2 (全て丸められた値)
     """
     if len(df) < 2:
-        # データが不十分な場合は0を返す
         return 0, 0, 0, 0, 0
 
     # 最新の完成した足 (前日/前の4時間足) のデータを使用
@@ -238,9 +250,7 @@ def calculate_pivot_levels(df: pd.DataFrame, pivot_type: str = 'Classic') -> tup
         R2 = P + (H - L)
         S2 = P - (H - L)
     elif pivot_type == 'Fibonacci':
-        # フィボナッチピボット
         P = (H + L + C) / 3
-        
         R1 = P + 0.382 * (H - L)
         S1 = P - 0.382 * (H - L)
         R2 = P + 0.618 * (H - L)
@@ -259,7 +269,6 @@ def backtest_strategy(df: pd.DataFrame, initial_capital: float = BACKTEST_CAPITA
     """
     df_clean = df.dropna().copy()
     if df_clean.empty or len(df_clean) < 10:
-        # データ不足時の処理を強化
         return {
             'trades': 0, 'wins': 0, 'win_rate': 0.0, 'profit_factor': 0.0,
             'max_drawdown': 0.0, 'total_return': 0.0, 'final_capital': initial_capital,
@@ -330,7 +339,6 @@ def backtest_strategy(df: pd.DataFrame, initial_capital: float = BACKTEST_CAPITA
         else: # ショート
             profit = (entry_price - close) * abs(position)
         capital += profit
-        # 最終資本を更新 (capital_historyには既に含み益/含み損として記録されているため、ここではtradesとcapitalのみ更新)
     
     wins = sum(1 for t in trades if t['profit'] > 0)
     total_gross_profit = sum(t['profit'] for t in trades if t['profit'] > 0)
@@ -491,9 +499,11 @@ def generate_strategy(df_long: pd.DataFrame, df_short: pd.DataFrame) -> dict:
              strategy = f"レンジ取引。日足S1 ({S1_long_str}) 付近で買い、日足R1 ({R1_long_str}) 付近で売り。"
 
     # --- 短期予測の強化 ---
+    # MACDヒストグラムの存在チェックを追加
+    macdh_short = latest_short.get('MACDh_12_26_9', 0)
+    
     predictions = {
-        # 4h足のモメンタムとMAを参考に予測キーを修正
-        "1h": "強い上昇 🚀" if latest_short['MACDh_12_26_9'] > 0 and latest_short['Close'] > short_ma50 else "強い下降 📉" if latest_short['MACDh_12_26_9'] < 0 and latest_short['Close'] < short_ma50 else "レンジ ↔️",
+        "1h": "強い上昇 🚀" if macdh_short > 0 and latest_short['Close'] > short_ma50 else "強い下降 📉" if macdh_short < 0 and latest_short['Close'] < short_ma50 else "レンジ ↔️",
         "4h": "上昇 📈" if latest_short['Close'] > short_ma50 else "下降 📉",
         "12h": "上昇 📈" if latest['Close'] > P_long else "下降 📉",
         "24h": bias
@@ -622,7 +632,7 @@ def update_report_data():
         global_data['last_updated'] = last_updated_str 
 
         # 2. データ取得 (リアルタイム、日足、4時間足)
-        realtime_price = fetch_current_price() # <-- リトライ機能付き
+        realtime_price = fetch_current_price() # <-- 1h足に変更して安定化
         df_long = fetch_btc_ohlcv_data(LONG_PERIOD, LONG_INTERVAL)
         df_short = fetch_btc_ohlcv_data(SHORT_PERIOD, SHORT_INTERVAL)
 
@@ -653,7 +663,7 @@ def update_report_data():
         price_source = "OHLCV 終値 (最新の足)"
         if realtime_price > 0:
             analysis_result['price'] = realtime_price # リアルタイム価格で上書き
-            price_source = "リアルタイム単価 (1分足)" 
+            price_source = "リアルタイム単価 (1時間足)" 
             
         # 6. グローバル状態の最終更新
         price = analysis_result['price']
@@ -665,7 +675,7 @@ def update_report_data():
         global_data['dominance'] = analysis_result['dominance']
         global_data['predictions'] = analysis_result['predictions']
 
-        # 7. レポートの整形 (次回更新予定の計算を再導入)
+        # 7. レポートの整形
         P, R1, S1, ma50, rsi = analysis_result['P'], analysis_result['R1'], analysis_result['S1'], analysis_result['MA50'], analysis_result['RSI']
         dominance = analysis_result['dominance']
         strategy = analysis_result['strategy']
@@ -690,11 +700,24 @@ def update_report_data():
 
         prediction_lines = [f"• {tf}後予測: *{predictions.get(tf.split('h')[0], 'N/A')}*" for tf in ["1h", "4h", "12h", "24h"]]
 
+        # バックテスト結果の構築
+        backtest_results = global_data['backtest']
+        if 'error' in backtest_results:
+            bt_summary = f"⚠️ *バックテストエラー*: {backtest_results['error']}"
+        else:
+            bt_summary = (
+                f"💰 *最終資本*: `${backtest_results['final_capital']:,.2f}` (初期: `${BACKTEST_CAPITAL:,.2f}`)\n"
+                f"📈 *総リターン率*: *{backtest_results['total_return']:,.2f}%*\n"
+                f"🏆 *プロフィットファクター*: `{backtest_results['profit_factor']:,.2f}` (1.0以上が望ましい)\n"
+                f"📉 *最大ドローダウン (DD)*: `{backtest_results['max_drawdown']:,.2f}%` (リスク指標)\n"
+                f"📊 *取引回数*: `{backtest_results['trades']}` (勝率: `{backtest_results['win_rate']:,.2f}%`)"
+            )
+            
         # --- レポートメッセージの構築 ---
         report_message = (
             f"👑 *BTC実践分析レポート (テクニカルBOT)* 👑\n\n"
             f"📅 *最終データ更新*: `{last_updated_str}`\n"
-            f"🕒 **次回更新予定**: {next_run_time_fmt}\n" # <-- 追加
+            f"🕒 **次回更新予定**: {next_run_time_fmt}\n" 
             f"📊 *処理データ件数*: *{len(df_long)}* 件 ({LONG_INTERVAL}足) + *{len(df_short)}* 件 ({SHORT_INTERVAL}足)\n\n"
             
             f"**🚀 市場の優勢 (Dominance) 🚀**\n"
@@ -711,30 +734,19 @@ def update_report_data():
             
             f"--- *総合戦略サマリー* ---\n"
             f"🛡️ *推奨戦略*: *{strategy}*\n\n"
-        )
-        
-        # バックテスト結果の構築
-        backtest_results = global_data['backtest']
-        if 'error' in backtest_results:
-            backtest_lines = [f"⚠️ *バックテスト結果*: {backtest_results['error']}"]
-        else:
-            backtest_lines = [
-                f"--- *バックテスト結果 ({LONG_PERIOD} / {LONG_INTERVAL}足)* ---",
-                f"💰 *最終資本*: `${backtest_results['final_capital']:,.2f}` (初期: `${BACKTEST_CAPITAL:,.2f}`)",
-                f"📈 *総リターン率*: *{backtest_results['total_return']:,.2f}%*",
-                f"🏆 *プロフィットファクター*: `{backtest_results['profit_factor']:,.2f}` (1.0以上が望ましい)",
-                f"📉 *最大ドローダウン (DD)*: `{backtest_results['max_drawdown']:,.2f}%` (リスク指標)",
-                f"📊 *取引回数*: `{backtest_results['trades']}` (勝率: `{backtest_results['win_rate']:,.2f}%`)"
-            ]
-
-        report_message += (
+            
             f"{chr(8212) * 20}\n"
-            f"{'\n'.join(backtest_lines)}\n\n"
+            f"--- *バックテスト結果 ({LONG_PERIOD} / {LONG_INTERVAL}足)* ---\n"
+            f"{bt_summary}\n\n"
             f"_※ この分析は、実戦的なマルチタイムフレーム分析に基づきますが、投資助言ではありません。_"
         )
 
+        # 8. テキストメッセージの送信 (最優先でキューに追加)
+        Thread(target=send_telegram_message, args=(report_message,)).start()
+        logging.info("✅ レポートテキストメッセージの通知キューへの追加完了。")
 
-        # 8. 画像生成と通知の実行
+
+        # 9. チャート描画と写真送信 (失敗してもテキストは届いている)
         global_data['scheduler_status'] = 'チャート描画中'
         try:
             logging.info("チャート画像を生成中...")
@@ -746,33 +758,28 @@ def update_report_data():
                 f"💰 現在価格: {formatted_current_price}\n"
                 f"🚨 *優勢度*: *{dominance}*\n"
                 f"🛡️ *推奨戦略*: {strategy}\n"
-                f"_詳細は別途送信されるテキストレポートをご確認ください。_"
+                f"_詳細は別途送信されたテキストレポートをご確認ください。_"
             )
             
             if chart_buffer.getbuffer().nbytes > 0:
                 Thread(target=send_telegram_photo, args=(chart_buffer, photo_caption)).start()
+                logging.info("✅ チャート画像メッセージの通知キューへの追加完了。")
             else:
                  logging.error("❌ チャート画像のバッファが空です。画像送信をスキップしました。")
-                 error_caption = f"⚠️ *チャート生成失敗*\n\nデータは正常に処理されましたが、チャート画像生成中にエラーが発生しました。\n最終更新: {last_updated_str}"
-                 Thread(target=send_telegram_message, args=(error_caption,)).start()
 
         except Exception as e:
             logging.error(f"❌ チャート画像の生成または送信に失敗しました: {e}", exc_info=True)
-            error_caption = f"⚠️ *チャート生成失敗*\n\nデータは正常に処理されましたが、チャート画像生成中に予期せぬエラーが発生しました。\nエラー詳細: {str(e)[:100]}...\n最終更新: {last_updated_str}"
-            Thread(target=send_telegram_message, args=(error_caption,)).start()
-
-        # テキストメッセージは必ず最後に送信
-        Thread(target=send_telegram_message, args=(report_message,)).start()
-
-        logging.info("レポート更新タスク完了。通知キューに追加されました。")
+            # テキストレポートは既に送信済みのため、ここで特別な追加通知は不要
+            
+        logging.info("レポート更新タスク完了。")
 
 
     except Exception as e:
         # メインタスク全体で例外が発生した場合のログと通知
         global_data['scheduler_status'] = 'タスク失敗 (未処理例外)'
         logging.critical(f"❌ 致命的エラー: update_report_dataタスクが未処理の例外で失敗しました: {e}", exc_info=True)
-        # 失敗通知を試みる (この通知が「初回起動レポート」の代わりとなる)
-        error_msg = f"💀 **BOT致命的エラー**: メイン分析タスクが起動に失敗しました。詳細をログで確認してください: {str(e)}"
+        # 失敗通知を試みる (この通知が最後の砦)
+        error_msg = f"💀 **BOT致命的エラー**: メイン分析タスクが失敗しました。詳細をログで確認してください: {str(e)[:200]}..."
         Thread(target=send_telegram_message, args=(error_msg,)).start()
         
     logging.info("-" * 50)
@@ -819,4 +826,5 @@ if __name__ == '__main__':
     app.run(host='0.0.0.0', port=port)
 else:
     # GunicornなどのWSGIサーバーで実行する場合の処理
+    # Gunicorn起動後に初回レポートを生成
     Thread(target=update_report_data).start()
