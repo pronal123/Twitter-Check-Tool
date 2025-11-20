@@ -58,13 +58,12 @@ scheduler = APScheduler()
 
 # === [定義] データインターバルと期間 ===
 TICKER = "BTC-USD"
-# MINKABU_URL は削除されています
 LONG_PERIOD = "1y" # 日足（1d）分析用 - バックテストのため1年間
 LONG_INTERVAL = "1d"
 SHORT_PERIOD = "30d" # 4時間足（4h）分析用 - 短期戦略
 SHORT_INTERVAL = "4h"
 BACKTEST_CAPITAL = 100000 # バックテストの初期資本
-SCHEDULER_INTERVAL_HOURS = 6 # スケジューラー実行間隔
+SCHEDULER_INTERVAL_HOURS = 6 # スケジューラー実行間隔 <--- 再追加
 # ===============================================
 
 # グローバル状態（ダッシュボード表示用）
@@ -144,7 +143,8 @@ def fetch_btc_ohlcv_data(period: str, interval: str) -> pd.DataFrame:
             df = yf.download(TICKER, period=period, interval=interval, progress=False, auto_adjust=True)
 
             if df.empty or 'Close' not in df.columns or len(df) < 5: 
-                raise ValueError("取得したデータが空または不十分です。レート制限の可能性があります。")
+                # エラーではなく、データ不足として処理
+                return pd.DataFrame() 
 
             # MultiIndexフラット化
             if isinstance(df.columns, pd.MultiIndex):
@@ -167,49 +167,36 @@ def fetch_btc_ohlcv_data(period: str, interval: str) -> pd.DataFrame:
                 logging.error("❌ 最大リトライ回数に達しました。データ取得を中止し、空のDataFrameを返します。")
                 return pd.DataFrame() # 空のDataFrameを返して呼び出し元で処理させる
 
-# === リアルタイム価格取得関数 (リトライ機能付き) - Yfinance対応 (1時間足終値に修正) ===
+# === リアルタイム価格取得関数 (リトライ機能付き) ===
 def fetch_current_price() -> float:
     """
-    yfinanceからBTC-USDの1時間足の最新終値を取得します（リトライ付き）。
+    yfinanceからBTC-USDの最新の価格をリアルタイムで取得します（リトライ付き）。
     """
     max_retries = 3
-    
-    # 1時間足の最新データを取得するために、期間を短く設定 (例: 1日)
-    INTERVAL_1H = "1h"
-    PERIOD_1D = "1d" 
-    
     for attempt in range(max_retries):
         try:
-            logging.info(f"1時間足の最新終値を取得中 (ソース: Yfinance/{INTERVAL_1H})... (試行 {attempt + 1}/{max_retries})")
+            logging.info(f"リアルタイム価格取得中... (試行 {attempt + 1}/{max_retries})")
+            # 1分足の最新のデータを取得
+            df = yf.download(TICKER, period="1m", interval="1m", progress=False, auto_adjust=True, timeout=5)
             
-            # yfinance.downloadを使用して1時間足データを取得
-            df_1h = yf.download(TICKER, period=PERIOD_1D, interval=INTERVAL_1H, progress=False, auto_adjust=True)
-            
-            if df_1h.empty or 'Close' not in df_1h.columns or len(df_1h) == 0:
-                raise ValueError("1時間足のデータが空または不十分です。")
-            
-            # 最新の終値を取得
-            latest_close = df_1h['Close'].iloc[-1]
-            
-            if latest_close > 0:
-                logging.info(f"✅ 1時間足の最新終値取得成功: ${latest_close:,.2f}")
-                return round(latest_close, 2)
-            
-            # 価格が0以下の場合はエラー
-            raise ValueError("取得した最新終値が不正な値です (0以下)。")
+            if not df.empty and 'Close' in df.columns and len(df) > 0:
+                # 最新のClose価格を返す
+                current_price = df['Close'].iloc[-1]
+                logging.info(f"✅ リアルタイム価格取得成功: ${current_price:,.2f}")
+                return round(current_price, 2)
+            else:
+                raise ValueError("取得したデータが空または不十分です。")
 
         except Exception as e:
-            logging.warning(f"⚠️ Yfinanceからの1時間足価格取得失敗 (試行 {attempt + 1}/{max_retries}): {e}")
-            
-        if attempt < max_retries - 1:
-            # 待機時間を設定
-            wait_time = 2 ** attempt * 2 + random.uniform(0, 1) # 2, 4秒待機 (ランダムジッター追加)
-            time.sleep(wait_time)
-        else:
-            logging.error("❌ 1時間足価格取得の最大リトライ回数に達しました。0.0を返します。")
-            return 0.0
+            logging.warning(f"⚠️ リアルタイム価格取得失敗 (試行 {attempt + 1}/{max_retries}): {e}")
+            if attempt < max_retries - 1:
+                wait_time = 2 ** attempt * 2 + random.uniform(0, 1) # 2, 4秒待機 (ランダムジッター追加)
+                time.sleep(wait_time)
+                continue
+            else:
+                logging.error("❌ リアルタイム価格取得の最大リトライ回数に達しました。0.0を返します。")
+                return 0.0
 # =======================================
-
 
 def analyze_data(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -321,49 +308,48 @@ def backtest_strategy(df: pd.DataFrame, initial_capital: float = BACKTEST_CAPITA
             elif close < current_data[MA_COL] * 0.995 and current_data[RSI_COL] > 30:
                 position = - (capital * 0.5 / close) # ショートポジション
                 entry_price = close
-                
-        capital_history.append(capital)
+        
+        # 各足での資本状況を記録 (未決済ポジションの含み益/含み損を考慮)
+        current_equity = capital + (close - entry_price) * position if position != 0 else capital
+        capital_history.append(current_equity)
 
+    # --- パフォーマンス指標の計算 ---
+    total_trades = len(trades)
+    if total_trades == 0:
+         return {
+            'trades': 0, 'wins': 0, 'win_rate': 0.0, 'profit_factor': 0.0,
+            'max_drawdown': 0.0, 'total_return': 0.0, 'final_capital': initial_capital,
+            'error': 'バックテスト期間中に取引が成立しませんでした。'
+        }
+    
     # 最終的なクローズ（もしポジションがあれば）
     if position != 0:
         close = df_clean.iloc[-1]['Close']
         if position > 0: # ロング
             profit = (close - entry_price) * position
-            trades.append({'type': 'LONG (Final)', 'entry': entry_price, 'exit': close, 'profit': profit})
         else: # ショート
             profit = (entry_price - close) * abs(position)
-            trades.append({'type': 'SHORT (Final)', 'entry': entry_price, 'exit': close, 'profit': profit})
         capital += profit
-        capital_history[-1] = capital # 最後の資本を更新
-
-    # --- パフォーマンス指標の計算 ---
-    total_trades = len(trades)
-    if total_trades == 0:
-        return {
-            'trades': 0, 'wins': 0, 'win_rate': 0.0, 'profit_factor': 0.0,
-            'max_drawdown': 0.0, 'total_return': 0.0, 'final_capital': initial_capital,
-            'error': 'バックテスト期間中に取引が成立しませんでした。'
-        }
-
+        # 最終資本を更新 (capital_historyには既に含み益/含み損として記録されているため、ここではtradesとcapitalのみ更新)
+    
     wins = sum(1 for t in trades if t['profit'] > 0)
     total_gross_profit = sum(t['profit'] for t in trades if t['profit'] > 0)
     total_gross_loss = abs(sum(t['profit'] for t in trades if t['profit'] < 0))
-
+    
     win_rate = (wins / total_trades) * 100
-
+    
     if total_gross_loss > 0:
         profit_factor = total_gross_profit / total_gross_loss
-    else: 
-        # 損失がない場合は、利益額をPFとして返す（極端な値にならないように）
+    else:
         profit_factor = total_gross_profit if total_gross_profit > 0 else 0.0
 
     equity = pd.Series(capital_history)
     peak = equity.cummax()
     drawdown = (peak - equity) / peak
     max_drawdown = drawdown.max() * 100
-
+    
     total_return = ((capital - initial_capital) / initial_capital) * 100
-
+    
     return {
         'trades': total_trades,
         'wins': wins,
@@ -387,71 +373,79 @@ def generate_strategy(df_long: pd.DataFrame, df_short: pd.DataFrame) -> dict:
     if len(df_long_clean) < 2 or len(df_short_clean) < 2:
         price = df_long['Close'].iloc[-1] if not df_long.empty and 'Close' in df_long.columns else 0
         return {
-            'price': price, 'P': price, 'R1': price * 1.01, 'S1': price * 0.99,
-            'MA50': price, 'RSI': 50, 'bias': 'データ不足', 'dominance': 'N/A',
-            'strategy': '分析に必要な十分な期間のデータが不足しています。', 'details': [], 'predictions': {}
+            'price': price, 'P': price, 'R1': price * 1.01, 'S1': price * 0.99, 'MA50': price, 'RSI': 50,
+            'bias': 'データ不足', 'dominance': 'N/A',
+            'strategy': '分析に必要な十分な期間のデータが揃っていません。',
+            'details': ['分析に必要な十分な期間のデータが揃っていません。'],
+            'predictions': {'1h': 'N/A', '4h': 'N/A', '12h': 'N/A', '24h': 'N/A'}
         }
 
-    # --- 1. 日足の最新データとピボットポイントの計算 ---
-    latest_long = df_long_clean.iloc[-1]
-    P_long, R1_long, S1_long, R2_long, S2_long = calculate_pivot_levels(df_long_clean, 'Classic')
+    latest = df_long_clean.iloc[-1]
     
-    # --- 2. 4時間足の最新データとピボットポイントの計算 ---
+    # 日足の指標値
+    price = latest['Close'] 
+    ma50 = latest['SMA_50']
+    ma200 = latest['SMA_200']
+    rsi = latest['RSI_14']
+
+    # ピボットポイントの計算 (日足データでクラシックピボットを使用)
+    P_long, R1_long, S1_long, _, _ = calculate_pivot_levels(df_long, 'Classic')
+
+    # 短期（4時間足）の分析
     latest_short = df_short_clean.iloc[-1]
-    P_short, R1_short, S1_short, R2_short, S2_short = calculate_pivot_levels(df_short_clean, 'Classic')
-    
-    long_ma50 = latest_long['SMA_50']
-    long_ma200 = latest_long['SMA_200']
-    rsi = latest_long['RSI_14']
-    macd_hist = latest_long['MACDh_12_26_9']
-    
+    _, R1_short, S1_short, _, _ = calculate_pivot_levels(df_short, 'Classic')
     short_ma50 = latest_short['SMA_50']
 
-    # --- 3. 優勢度スコアリング ---
+    # 総合バイアスと戦略の決定
+    bias = "中立"
+    strategy = "様子見（ブレイクアウト待ち）"
+    details = []
     bull_score = 0
     bear_score = 0
-    details = []
 
-    # 長期トレンド (MA200)
-    if latest_long['Close'] > long_ma200:
+    # --- 1. 長期・中期トレンドバイアス (日足 MA) ---
+    if price > ma200:
+        details.append(f"• *長期トレンド*: 価格 (`{price:,.2f}`) はMA200 (`{ma200:,.2f}`) を上回り、*長期的な強気相場*です。")
         bull_score += 2
-        details.append(f"• *長期トレンド*: 価格はMA200 (`{long_ma200:,.2f}`) の上で、長期的な*強気相場*が優勢です。")
     else:
+        details.append(f"• *長期トレンド*: 価格はMA200 (`{ma200:,.2f}`) の下で、長期的な弱気相場が優勢です。")
         bear_score += 2
-        details.append(f"• *長期トレンド*: 価格はMA200 (`{long_ma200:,.2f}`) の下で、長期的な*弱気相場*が優勢です。")
 
-    # 中期トレンド (MA50)
-    if latest_long['Close'] > long_ma50:
+    if price > ma50 * 1.005:
+        details.append(f"• *中期トレンド*: 価格がMA50 (`{ma50:,.2f}`) を明確に上回り、中期的に強い強気トレンドです。")
         bull_score += 1
-        details.append(f"• *中期トレンド*: 価格がMA50 (`{long_ma50:,.2f}`) を明確に上回り、中期的な*強気トレンド*が優勢です。")
-    else:
+    elif price < ma50 * 0.995:
+        details.append(f"• *中期トレンド*: 価格がMA50 (`{ma50:,.2f}`) を明確に下回り、中期的な弱気トレンドが優勢です。")
         bear_score += 1
-        details.append(f"• *中期トレンド*: 価格がMA50 (`{long_ma50:,.2f}`) を明確に下回り、中期的な*弱気トレンド*が優勢です。")
-
-    # モメンタム (MACD)
-    if macd_hist > 0:
-        bull_score += 1
-        details.append("• *モメンタム*: MACDがシグナルラインの上にあり、モメンタムは*上昇傾向*です。")
     else:
-        bear_score += 1
-        details.append("• *モメンタム*: MACDがシグナルラインの下にあり、モメンタムは*下降傾向*です。")
+        details.append(f"• *中期トレンド*: 価格はMA50 (`{ma50:,.2f}`) 付近で推移しており、レンジ相場が想定されます。")
 
-    # 過熱感 (RSI)
-    if rsi > 60:
-        bear_score += 1 # 買われすぎはショートのサイン
-        details.append(f"• *RSI*: 60 (`{rsi:,.2f}`) を上回り、*買われすぎ*の可能性があります。")
-    elif rsi < 40:
-        bull_score += 1 # 売られすぎはロングのサイン
-        details.append(f"• *RSI*: 40 (`{rsi:,.2f}`) を下回り、*売られすぎ*の可能性があります。")
+    # --- 2. モメンタムシグナル (MACDとRSI 50ライン) ---
+    MACD_COL = 'MACD_12_26_9'
+    MACDs_COL = 'MACDs_12_26_9'
+    if MACD_COL in latest and MACDs_COL in latest:
+        if latest[MACD_COL] > latest[MACDs_COL]:
+            details.append("• *モメンタム*: MACDがシグナルラインの上にあり、モメンタムは*上昇*傾向です。")
+            bull_score += 1
+        elif latest[MACD_COL] < latest[MACDs_COL]:
+            details.append("• *モメンタム*: MACDがシグナルラインの下にあり、モメンタムは*下降*傾向です。")
+            bear_score += 1
+
+    # --- 3. 過熱感 (RSI) ---
+    if rsi > 70:
+        details.append(f"• *RSI*: 70 (`{rsi:,.2f}`) を超え、*買われすぎ*を示唆。短期的な調整（利確売り）に警戒。")
+        bear_score += 1 
+    elif rsi < 30:
+        details.append(f"• *RSI*: 30 (`{rsi:,.2f}`) を下回り、*売られすぎ*を示唆。短期的な反発（押し目買い）のチャンス。")
+        bull_score += 1 
     elif rsi > 50:
-        bull_score += 0.5
         details.append(f"• *RSI*: 50 (`{rsi:,.2f}`) を上回り、強いモメンタムが*維持*されています。")
     else:
-        bear_score += 0.5
         details.append(f"• *RSI*: 50 (`{rsi:,.2f}`) を下回り、弱いモメンタムが*継続*しています。")
 
     # --- 4. 総合バイアスの決定 ---
     score_diff = bull_score - bear_score
+    
     if score_diff >= 3:
         dominance = "明確なロング優勢 🚀"
         bias = "強い上昇"
@@ -475,6 +469,7 @@ def generate_strategy(df_long: pd.DataFrame, df_short: pd.DataFrame) -> dict:
     R1_short_str = f"`${R1_short:,.2f}`"
     S1_short_str = f"`${S1_short:,.2f}`"
 
+
     if dominance in ["明確なロング優勢 🚀", "ロング優勢 📈"]:
         if latest_short['Close'] > short_ma50: # 短期も上向き
             strategy = f"🌟 *最強のロング戦略*。日足S1 ({S1_long_str}) または4h S1 ({S1_short_str}) への*押し目買い*を積極的に検討。"
@@ -484,242 +479,96 @@ def generate_strategy(df_long: pd.DataFrame, df_short: pd.DataFrame) -> dict:
         if latest_short['Close'] < short_ma50: # 短期も下向き
             strategy = f"💥 *最強のショート戦略*。日足R1 ({R1_long_str}) または4h R1 ({R1_short_str}) への*戻り売り*を積極的に検討。"
         else:
-            strategy = f"ショート優勢の戻り売り戦略。日足P ({P_long_str}) への短期的な反発時が主な売り場。"
-    else:
-        strategy = f"レンジ相場戦略。日足R1 ({R1_long_str}) 付近での戻り売りと、日足S1 ({S1_long_str}) 付近での押し目買いを検討。"
+            strategy = f"ショート優勢の戻り売り戦略。日足P ({P_long_str}) への短期的な上昇時が主な売り場。"
+    elif dominance == "中立/レンジ ↔️":
+        # ボリンジャーバンドの幅 (BBB) を使用したボラティリティチェック
+        BBB_COL = 'BBB_20_2.0_2.0' 
+        bbb = latest.get(BBB_COL, 100) # BBBが存在しない場合は大きな値を設定
         
-    # --- 6. 短期予測 ---
-    # ランダム性を持たせたシンプルな予測
+        if bbb < 10: # ボラティリティ圧縮
+             strategy = f"ボラティリティ圧縮中。日足R1 ({R1_long_str}) / S1 ({S1_long_str}) の*ブレイクアウト待ち*。"
+        else:
+             strategy = f"レンジ取引。日足S1 ({S1_long_str}) 付近で買い、日足R1 ({R1_long_str}) 付近で売り。"
+
+    # --- 短期予測の強化 ---
     predictions = {
-        '1h後予測': random.choice(['レンジ ↔️', 'レンジ ↔️', '下降 📉', '上昇 📈']),
-        '4h後予測': random.choice(['レンジ ↔️', '下降 📉', '下降 📉', '強い下降 💀'] if score_diff < 0 else ['レンジ ↔️', '上昇 📈', '上昇 📈', '強い上昇 🔥']),
-        '12h後予測': random.choice(['下降 📉', '強い下降 💀'] if score_diff <= -2 else ['レンジ ↔️', '下降 📉'] if score_diff < 0 else ['レンジ ↔️', '上昇 📈']),
-        '24h後予測': random.choice(['強い下降 💀'] if score_diff <= -3 else ['下降 📉'] if score_diff < 0 else ['強い上昇 🔥'] if score_diff >= 3 else ['上昇 📈'])
+        # 4h足のモメンタムとMAを参考に予測キーを修正
+        "1h": "強い上昇 🚀" if latest_short['MACDh_12_26_9'] > 0 and latest_short['Close'] > short_ma50 else "強い下降 📉" if latest_short['MACDh_12_26_9'] < 0 and latest_short['Close'] < short_ma50 else "レンジ ↔️",
+        "4h": "上昇 📈" if latest_short['Close'] > short_ma50 else "下降 📉",
+        "12h": "上昇 📈" if latest['Close'] > P_long else "下降 📉",
+        "24h": bias
     }
-    
+
     return {
-        'price': latest_long['Close'], # OHLCVの最新終値を初期値として設定
-        'P': P_long,
-        'R1': R1_long,
-        'S1': S1_long,
-        'MA50': long_ma50,
-        'RSI': rsi,
+        'price': price,
+        'P': P_long, 'R1': R1_long, 'S1': S1_long, 'MA50': ma50, 'RSI': rsi,
         'bias': bias,
         'dominance': dominance,
         'strategy': strategy,
         'details': details,
-        'predictions': predictions,
-        'R1_short': R1_short
+        'predictions': predictions
     }
+# ===============================================
 
-# === レポート作成のメインタスク ===
-def update_report_data():
+# === チャート生成ロジック ===
+def generate_chart_image(df: pd.DataFrame, analysis_result: dict) -> io.BytesIO:
     """
-    メインの分析タスク。データ取得、分析、バックテスト、レポート生成、通知を行います。
+    終値と主要なテクニカル指標を含むチャート画像を生成します。
     """
-    logging.info("-" * 50)
-    logging.info("🤖 レポート更新タスクを開始します...")
-    global_data['scheduler_status'] = 'データ取得中'
-    
-    try: # <--- 広範なtryブロックを開始 (スケジューラーの安定性向上)
-        
-        # 1. データ取得
-        df_long = fetch_btc_ohlcv_data(LONG_PERIOD, LONG_INTERVAL)
-        df_short = fetch_btc_ohlcv_data(SHORT_PERIOD, SHORT_INTERVAL)
-
-        if df_long.empty or df_short.empty:
-            global_data['scheduler_status'] = 'データ取得失敗'
-            logging.error("❌ データ取得に失敗しました。レポートを更新できません。")
-            # エラー通知
-            Thread(target=send_telegram_message, args=("❌ **BTC分析BOTエラー**: 過去データの取得に失敗しました。",)).start()
-            return
-
-        # 2. リアルタイム価格の取得 (Yfinance - 1時間足終値)
-        realtime_price = fetch_current_price()
-        
-        # 3. テクニカル分析
-        global_data['scheduler_status'] = '分析実行中'
-        df_long_analyzed = analyze_data(df_long)
-        df_short_analyzed = analyze_data(df_short)
-
-        # 4. バックテスト
-        try:
-            backtest_results = backtest_strategy(df_long_analyzed)
-        except Exception as e:
-            logging.error(f"❌ バックテスト中にエラーが発生しました: {e}", exc_info=True)
-            backtest_results = {'error': f"バックテスト失敗: {str(e)}"}
-        global_data['backtest'] = backtest_results
-
-        # 5. 戦略と予測の生成
-        analysis_result = generate_strategy(df_long_analyzed, df_short_analyzed)
-
-        # 6. グローバル状態の最終更新
-        
-        # **リアルタイム価格の適用とソースの決定**
-        price_source = "OHLCV 終値 (最新の足)"
-        if realtime_price > 0:
-            analysis_result['price'] = realtime_price # 1時間足終値で上書き
-            price_source = "1時間足 終値 (Yfinance/BTC-USD)" # ソースを1時間足終値に設定
-            
-        price = analysis_result['price'] # 最新の価格（1時間足終値または日足終値）
-        global_data['last_updated'] = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        global_data['data_count'] = len(df_long) + len(df_short)
-        global_data['scheduler_status'] = '稼働中' # 成功時
-        global_data['current_price'] = price
-        global_data['strategy'] = analysis_result['strategy']
-        global_data['bias'] = analysis_result['bias']
-        global_data['dominance'] = analysis_result['dominance']
-        global_data['predictions'] = analysis_result['predictions']
-
-        # 7. レポートの整形
-        P, R1, S1, ma50, rsi = analysis_result['P'], analysis_result['R1'], analysis_result['S1'], analysis_result['MA50'], analysis_result['RSI']
-        dominance = analysis_result['dominance']
-        strategy = analysis_result['strategy']
-        details = analysis_result['details']
-        predictions = analysis_result['predictions']
-        R1_short = analysis_result.get('R1_short', 0.0) # 4h R1
-
-        # 次回更新時刻の計算 (SCHEDULER_INTERVAL_HOURS時間後)
-        next_run_time = datetime.datetime.now() + datetime.timedelta(hours=SCHEDULER_INTERVAL_HOURS)
-        next_run_time_fmt = next_run_time.strftime('%Y-%m-%d %H:%M:%S JST') # JSTを明記
-        
-        # 価格をカンマ付きで整形
-        price_fmt = f"{price:,.2f}"
-        P_fmt = f"{P:,.2f}"
-        R1_fmt = f"{R1:,.2f}"
-        S1_fmt = f"{S1:,.2f}"
-        ma50_fmt = f"{ma50:,.2f}"
-        
-        # バックテスト結果の整形
-        bt_error = backtest_results.get('error')
-        bt_summary = ""
-        if bt_error:
-            bt_summary = f"❌ *バックテストエラー*: {bt_error}"
-        else:
-            bt_summary = f"""
-💰 最終資本: ${backtest_results['final_capital']:,.2f} (初期: ${BACKTEST_CAPITAL:,.2f})
-📈 総リターン率: {backtest_results['total_return']:,.2f}%
-🏆 プロフィットファクター: {backtest_results['profit_factor']:,.2f} (1.0以上が望ましい)
-📉 最大ドローダウン (DD): {backtest_results['max_drawdown']:,.2f}% (リスク指標)
-📊 取引回数: {backtest_results['trades']} (勝率: {backtest_results['win_rate']:,.2f}%)
-            """
-
-        report_message = f"""
-👑 BTC実践分析レポート (テクニカルBOT) 👑
-
-📅 最終データ更新: {global_data['last_updated']}
-🕒 **次回更新予定**: {next_run_time_fmt}
-📊 処理データ件数: {len(df_long)} 件 ({LONG_INTERVAL}足) + {len(df_short)} 件 ({SHORT_INTERVAL}足)
-
-🚀 市場の優勢 (Dominance) 🚀
-🚨 総合優勢度: {dominance}
-
---- 主要価格帯と指標 (USD) ---
-💰 現在価格 (BTC-USD): ${price_fmt} ({price_source})
-🟡 ピボットポイント (P, 日足): ${P_fmt}
-🔼 主要レジスタンス (R1, 日足): ${R1_fmt}
-🔽 主要サポート (S1, 日足): ${S1_fmt}
-💡 中期トレンド転換点 (MA50, 日足): ${ma50_fmt}
-🔥 RSI (14期間, 日足): {rsi:,.2f}
-
---- 動向の詳細分析と根拠 ---
-{'\n'.join(details)}
-
---- 短期動向と予測 ---
-• 1h後予測: {predictions['1h後予測']}
-• 4h後予測: {predictions['4h後予測']}
-• 12h後予測: {predictions['12h後予測']}
-• 24h後予測: {predictions['24h後予測']}
-
---- 総合戦略サマリー ---
-🛡️ 推奨戦略: {strategy.replace(f"`${R1_short:,.2f}`", f"`${R1_short:,.2f}`")}
-
-————————————————————
---- バックテスト結果 ({LONG_PERIOD} / {LONG_INTERVAL}足) ---
-{bt_summary}
-
-※ この分析は、実戦的なマルチタイムフレーム分析に基づきますが、投資助言ではありません。
-"""
-
-        # 8. チャート描画と送信
-        global_data['scheduler_status'] = 'チャート描画中'
-        try:
-            chart_buffer = create_chart(df_long_analyzed, analysis_result)
-            caption = f"👑 BTCテクニカル分析レポート\n\n**現在価格**: ${price_fmt}\n**優勢度**: {dominance}\n**推奨戦略**: {strategy}"
-            # 画像送信を非同期で実行
-            Thread(target=send_telegram_photo, args=(chart_buffer, caption)).start()
-        except Exception as e:
-            logging.error(f"❌ チャート描画または送信中にエラーが発生しました: {e}", exc_info=True)
-            error_caption = f"⚠️ **チャート描画失敗**: {str(e)}"
-            Thread(target=send_telegram_message, args=(error_caption,)).start()
-
-
-        # テキストメッセージは必ず最後に送信
-        Thread(target=send_telegram_message, args=(report_message,)).start()
-
-        logging.info("レポート更新タスク完了。通知キューに追加されました。")
-
-    except Exception as e:
-        # メインタスク全体で例外が発生した場合
-        global_data['scheduler_status'] = 'タスク失敗 (未処理例外)'
-        logging.critical(f"❌ 致命的エラー: update_report_dataタスクが未処理の例外で失敗しました: {e}", exc_info=True)
-        # 失敗通知を試みる
-        Thread(target=send_telegram_message, args=(f"💀 **BOT致命的エラー**: メイン分析タスクが失敗しました。詳細をログで確認してください: {str(e)}",)).start()
-        
-    logging.info("-" * 50)
-
-
-# -----------------
-# チャート描画関数
-# -----------------
-def create_chart(df: pd.DataFrame, analysis_result: dict) -> io.BytesIO:
-    """
-    テクニカル指標と主要レベルを含む価格チャートを生成し、BytesIOバッファとして返します。
-    """
-    df_plot = df.iloc[-90:].copy() # 直近90日間のみをプロット
-
-    # ボリンジャーバンドのカラム名を確認
+    # pandas_taの命名規則に合わせてカラム名を調整
     BBU_COL = 'BBU_20_2.0'
     BBL_COL = 'BBL_20_2.0'
+    
+    # プロットする期間を限定 (例: 直近90日間)
+    df_plot = df.iloc[-90:].copy() 
+    
+    required_cols = ['Close', 'High', 'Low', 'SMA_50', 'SMA_200']
+    
+    # ボリンジャーバンドのカラム名を確認
     bb_cols_exist = BBU_COL in df_plot.columns and BBL_COL in df_plot.columns
+    if bb_cols_exist:
+        required_cols.extend([BBU_COL, BBL_COL])
+    
+    if not all(col in df_plot.columns for col in required_cols):
+        logging.error(f"チャート描画に必要なカラムの一部が不足しています。利用可能なカラム: {df_plot.columns.tolist()}")
+        return io.BytesIO()
 
-    # 1. メインチャート (価格とMA, BB)
+    if len(df_plot) < 5:
+        logging.error("チャート描画に必要なデータポイントが少なすぎます。")
+        return io.BytesIO()
+
     fig, ax = plt.subplots(figsize=(12, 7), dpi=100)
     
     # --- 1. 価格ライン ---
     ax.plot(df_plot.index, df_plot['Close'], label='BTC 終値 (USD)', color='#059669', linewidth=2.5)
 
     # --- 2. テクニカル指標ラインの描画 ---
-    ax.plot(df_plot.index, df_plot['SMA_50'], label='SMA 50 (中期)', color='#fbbf24', linestyle='-', linewidth=2, alpha=0.8)
+    ax.plot(df_plot.index, df_plot['SMA_50'], label='SMA 50 (中期)', color='#fbbf24', linestyle='-', linewidth=2, alpha=0.8) 
     ax.plot(df_plot.index, df_plot['SMA_200'], label='SMA 200 (長期)', color='#ef4444', linestyle='--', linewidth=1.5, alpha=0.9)
-    
+
     # ボリンジャーバンド (カラムが存在する場合のみ描画)
     if bb_cols_exist:
         ax.plot(df_plot.index, df_plot[BBU_COL], label='BB Upper (+2σ)', color='#ef4444', linestyle=':', linewidth=1)
         ax.plot(df_plot.index, df_plot[BBL_COL], label='BB Lower (-2σ)', color='#3b82f6', linestyle=':', linewidth=1)
 
     # --- 3. 最新の主要レベルの描画 ---
-    # analysis_result['price'] は、リアルタイム価格が取得できていればその値が設定されています。
-    price = analysis_result['price']
+    price = analysis_result['price'] 
     P = analysis_result['P']
     R1 = analysis_result['R1']
     S1 = analysis_result['S1']
-    
+
     # ピボットポイント (P)
     ax.axhline(P, color='#9333ea', linestyle='--', linewidth=1.5, alpha=0.8, zorder=0)
     ax.text(df_plot.index[-1], P, f' P: ${P:,.2f}', color='#9333ea', ha='right', va='center', fontsize=10, bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', boxstyle='round,pad=0.3'))
     
-    # R1
+    # R1/S1
     ax.axhline(R1, color='red', linestyle='-', linewidth=1, alpha=0.6, zorder=0)
     ax.text(df_plot.index[-1], R1, f' R1: ${R1:,.2f}', color='red', ha='right', va='bottom', fontsize=10, bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', boxstyle='round,pad=0.3'))
-
-    # S1
     ax.axhline(S1, color='blue', linestyle='-', linewidth=1, alpha=0.6, zorder=0)
     ax.text(df_plot.index[-1], S1, f' S1: ${S1:,.2f}', color='blue', ha='right', va='top', fontsize=10, bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', boxstyle='round,pad=0.3'))
-    
+
     # 現在価格の点とラベル
     if len(df_plot) > 0:
-        # チャートの最終データポイントの時刻を使用し、価格は最新の価格を使用
         last_data_time = df_plot.index[-1]
         ax.scatter(last_data_time, price, color='black', s=100, zorder=5)
         ax.text(last_data_time, price, f' 現在 ${price:,.2f}', color='black', ha='right', va='bottom', fontsize=12, weight='bold')
@@ -728,22 +577,206 @@ def create_chart(df: pd.DataFrame, analysis_result: dict) -> io.BytesIO:
     ax.set_title(f'{TICKER} 価格推移とテクニカル分析 ({LONG_INTERVAL}足)', fontsize=18, color='#1f2937', weight='bold')
     ax.set_xlabel('日付', fontsize=12)
     ax.set_ylabel('終値 (USD)', fontsize=12)
-    ax.legend(loc='upper left')
-    ax.grid(True, linestyle='--', alpha=0.6)
-    
-    # X軸の日付フォーマット設定
-    ax.xaxis.set_major_formatter(DateFormatter('%m/%d'))
-    ax.xaxis.set_major_locator(DayLocator(interval=10))
-    plt.xticks(rotation=45)
+
+    formatter = DateFormatter("%m/%d")
+    ax.xaxis.set_major_formatter(formatter)
+
+    # x軸のラベルを間引く
+    if len(df_plot.index) > 15:
+        ax.xaxis.set_major_locator(DayLocator(interval=math.ceil(len(df_plot.index) / 8)))
+    else:
+        ax.xaxis.set_major_locator(DayLocator())
+
+    plt.xticks(rotation=45, ha='right')
+    plt.grid(True, linestyle=':', alpha=0.6)
+    plt.legend(loc='upper left', fontsize=10)
     plt.tight_layout()
 
-    # 画像をメモリに保存
-    buffer = io.BytesIO()
-    plt.savefig(buffer, format='png')
-    buffer.seek(0)
-    plt.close(fig) # メモリ解放
+    # 5. 画像をメモリ上のバイトストリームとして保存
+    buf = io.BytesIO()
+    plt.figure(fig.number)
+    plt.savefig(buf, format='png')
+    buf.seek(0)
+    plt.close(fig)
+
+    return buf
+
+
+# -----------------
+# スケジューリングタスク (致命的なエラー対策を強化)
+# -----------------
+def update_report_data():
+    """定期的に実行されるタスク：データ取得、分析、レポート更新、バックテストの実行"""
+    global global_data
+
+    logging.info("-" * 50)
+    logging.info("🤖 レポート更新タスクを開始します...")
     
-    return buffer
+    now = datetime.datetime.now()
+    last_updated_str = now.strftime('%Y-%m-%d %H:%M:%S')
+    
+    # === [CRITICAL FIX] 広範なtryブロックを開始し、予期せぬエラーでスレッドが停止するのを防ぐ ===
+    try: 
+        # 1. 処理開始ステータスの即時更新
+        global_data['scheduler_status'] = 'データ取得中' 
+        global_data['last_updated'] = last_updated_str 
+
+        # 2. データ取得 (リアルタイム、日足、4時間足)
+        realtime_price = fetch_current_price() # <-- リトライ機能付き
+        df_long = fetch_btc_ohlcv_data(LONG_PERIOD, LONG_INTERVAL)
+        df_short = fetch_btc_ohlcv_data(SHORT_PERIOD, SHORT_INTERVAL)
+
+        # データ不足チェック
+        if df_long.empty or df_short.empty:
+            raise ValueError("データ取得に失敗したか、データが空です。Yfinanceの接続またはレート制限を確認してください。")
+            
+        # 3. テクニカル分析
+        global_data['scheduler_status'] = '分析実行中'
+        df_long_analyzed = analyze_data(df_long)
+        df_short_analyzed = analyze_data(df_short)
+        
+        # 4. バックテストの実行
+        try:
+            logging.info(f"バックテスト実行中... 期間: {LONG_PERIOD}")
+            backtest_results = backtest_strategy(df_long_analyzed) 
+            global_data['backtest'] = backtest_results
+            logging.info("✅ バックテスト完了。")
+        except Exception as e:
+            logging.error(f"❌ バックテスト中にエラーが発生しました: {e}", exc_info=True)
+            backtest_results = {'error': f"バックテスト失敗: {str(e)}"}
+            global_data['backtest'] = backtest_results
+
+        # 5. 戦略と予測の生成
+        analysis_result = generate_strategy(df_long_analyzed, df_short_analyzed)
+
+        # リアルタイム価格の適用とソースの決定
+        price_source = "OHLCV 終値 (最新の足)"
+        if realtime_price > 0:
+            analysis_result['price'] = realtime_price # リアルタイム価格で上書き
+            price_source = "リアルタイム単価 (1分足)" 
+            
+        # 6. グローバル状態の最終更新
+        price = analysis_result['price']
+        global_data['data_count'] = len(df_long) + len(df_short) 
+        global_data['scheduler_status'] = '稼働中' # 成功時
+        global_data['current_price'] = price
+        global_data['strategy'] = analysis_result['strategy']
+        global_data['bias'] = analysis_result['bias']
+        global_data['dominance'] = analysis_result['dominance']
+        global_data['predictions'] = analysis_result['predictions']
+
+        # 7. レポートの整形 (次回更新予定の計算を再導入)
+        P, R1, S1, ma50, rsi = analysis_result['P'], analysis_result['R1'], analysis_result['S1'], analysis_result['MA50'], analysis_result['RSI']
+        dominance = analysis_result['dominance']
+        strategy = analysis_result['strategy']
+        details = analysis_result['details']
+        predictions = analysis_result['predictions']
+
+        # 次回更新時刻の計算 (SCHEDULER_INTERVAL_HOURS時間後)
+        next_run_time = now + datetime.timedelta(hours=SCHEDULER_INTERVAL_HOURS)
+        next_run_time_fmt = next_run_time.strftime('%Y-%m-%d %H:%M:%S JST') 
+        
+        # 価格をカンマ区切りにフォーマット
+        formatted_current_price = f"`${price:,.2f}`"
+        
+        price_analysis = [
+            f"💰 *現在価格 (BTC-USD)*: {formatted_current_price} (_{price_source}_)",
+            f"🟡 *ピボットポイント (P, 日足)*: {f'`${P:,.2f}`'}",
+            f"🔼 *主要レジスタンス (R1, 日足)*: {f'`${R1:,.2f}`'}",
+            f"🔽 *主要サポート (S1, 日足)*: {f'`${S1:,.2f}`'}",
+            f"💡 *中期トレンド転換点 (MA50, 日足)*: {f'`${ma50:,.2f}`'}",
+            f"🔥 *RSI (14期間, 日足)*: {f'`{rsi:,.2f}`'}"
+        ]
+
+        prediction_lines = [f"• {tf}後予測: *{predictions.get(tf.split('h')[0], 'N/A')}*" for tf in ["1h", "4h", "12h", "24h"]]
+
+        # --- レポートメッセージの構築 ---
+        report_message = (
+            f"👑 *BTC実践分析レポート (テクニカルBOT)* 👑\n\n"
+            f"📅 *最終データ更新*: `{last_updated_str}`\n"
+            f"🕒 **次回更新予定**: {next_run_time_fmt}\n" # <-- 追加
+            f"📊 *処理データ件数*: *{len(df_long)}* 件 ({LONG_INTERVAL}足) + *{len(df_short)}* 件 ({SHORT_INTERVAL}足)\n\n"
+            
+            f"**🚀 市場の優勢 (Dominance) 🚀**\n"
+            f"🚨 *総合優勢度*: *{dominance}*\n\n"
+            
+            f"--- *主要価格帯と指標 (USD)* ---\n"
+            f"{'\n'.join(price_analysis)}\n\n"
+            
+            f"--- *動向の詳細分析と根拠* ---\n"
+            f"{'\n'.join(details)}\n\n"
+            
+            f"--- *短期動向と予測* ---\n"
+            f"{'\n'.join(prediction_lines)}\n\n"
+            
+            f"--- *総合戦略サマリー* ---\n"
+            f"🛡️ *推奨戦略*: *{strategy}*\n\n"
+        )
+        
+        # バックテスト結果の構築
+        backtest_results = global_data['backtest']
+        if 'error' in backtest_results:
+            backtest_lines = [f"⚠️ *バックテスト結果*: {backtest_results['error']}"]
+        else:
+            backtest_lines = [
+                f"--- *バックテスト結果 ({LONG_PERIOD} / {LONG_INTERVAL}足)* ---",
+                f"💰 *最終資本*: `${backtest_results['final_capital']:,.2f}` (初期: `${BACKTEST_CAPITAL:,.2f}`)",
+                f"📈 *総リターン率*: *{backtest_results['total_return']:,.2f}%*",
+                f"🏆 *プロフィットファクター*: `{backtest_results['profit_factor']:,.2f}` (1.0以上が望ましい)",
+                f"📉 *最大ドローダウン (DD)*: `{backtest_results['max_drawdown']:,.2f}%` (リスク指標)",
+                f"📊 *取引回数*: `{backtest_results['trades']}` (勝率: `{backtest_results['win_rate']:,.2f}%`)"
+            ]
+
+        report_message += (
+            f"{chr(8212) * 20}\n"
+            f"{'\n'.join(backtest_lines)}\n\n"
+            f"_※ この分析は、実戦的なマルチタイムフレーム分析に基づきますが、投資助言ではありません。_"
+        )
+
+
+        # 8. 画像生成と通知の実行
+        global_data['scheduler_status'] = 'チャート描画中'
+        try:
+            logging.info("チャート画像を生成中...")
+            chart_buffer = generate_chart_image(df_long_analyzed, analysis_result)
+            
+            photo_caption = (
+                f"📈 *BTC実践分析チャート ({LONG_INTERVAL}足)* 📉\n"
+                f"📅 更新: `{last_updated_str}`\n"
+                f"💰 現在価格: {formatted_current_price}\n"
+                f"🚨 *優勢度*: *{dominance}*\n"
+                f"🛡️ *推奨戦略*: {strategy}\n"
+                f"_詳細は別途送信されるテキストレポートをご確認ください。_"
+            )
+            
+            if chart_buffer.getbuffer().nbytes > 0:
+                Thread(target=send_telegram_photo, args=(chart_buffer, photo_caption)).start()
+            else:
+                 logging.error("❌ チャート画像のバッファが空です。画像送信をスキップしました。")
+                 error_caption = f"⚠️ *チャート生成失敗*\n\nデータは正常に処理されましたが、チャート画像生成中にエラーが発生しました。\n最終更新: {last_updated_str}"
+                 Thread(target=send_telegram_message, args=(error_caption,)).start()
+
+        except Exception as e:
+            logging.error(f"❌ チャート画像の生成または送信に失敗しました: {e}", exc_info=True)
+            error_caption = f"⚠️ *チャート生成失敗*\n\nデータは正常に処理されましたが、チャート画像生成中に予期せぬエラーが発生しました。\nエラー詳細: {str(e)[:100]}...\n最終更新: {last_updated_str}"
+            Thread(target=send_telegram_message, args=(error_caption,)).start()
+
+        # テキストメッセージは必ず最後に送信
+        Thread(target=send_telegram_message, args=(report_message,)).start()
+
+        logging.info("レポート更新タスク完了。通知キューに追加されました。")
+
+
+    except Exception as e:
+        # メインタスク全体で例外が発生した場合のログと通知
+        global_data['scheduler_status'] = 'タスク失敗 (未処理例外)'
+        logging.critical(f"❌ 致命的エラー: update_report_dataタスクが未処理の例外で失敗しました: {e}", exc_info=True)
+        # 失敗通知を試みる (この通知が「初回起動レポート」の代わりとなる)
+        error_msg = f"💀 **BOT致命的エラー**: メイン分析タスクが起動に失敗しました。詳細をログで確認してください: {str(e)}"
+        Thread(target=send_telegram_message, args=(error_msg,)).start()
+        
+    logging.info("-" * 50)
+
 
 # -----------------
 # ルート（エンドポイント）
@@ -751,7 +784,6 @@ def create_chart(df: pd.DataFrame, analysis_result: dict) -> io.BytesIO:
 @app.route('/')
 def index():
     """ダッシュボードの表示"""
-    # テンプレートにglobal_dataを渡すことで、初回表示時に初期値を埋め込む
     return render_template('index.html', title='BTC実践テクニカル分析 BOT ダッシュボード', data=global_data)
 
 @app.route('/status')
@@ -776,4 +808,15 @@ if not scheduler.running:
                       trigger='interval', hours=SCHEDULER_INTERVAL_HOURS, replace_existing=True)
 
     scheduler.start()
-    logging.info("✅ スケジューラーを開始しました...")
+    logging.info("✅ スケジューラーを開始しました。")
+
+# --- 🔥 アプリ起動後の初回実行トリガー ---
+if __name__ == '__main__':
+    # Flaskの起動とは別に、分析処理を別スレッドで開始
+    Thread(target=update_report_data).start()
+    port = int(os.environ.get('PORT', 5000))
+    logging.info(f"ローカルサーバーを {port} ポートで開始します。")
+    app.run(host='0.0.0.0', port=port)
+else:
+    # GunicornなどのWSGIサーバーで実行する場合の処理
+    Thread(target=update_report_data).start()
